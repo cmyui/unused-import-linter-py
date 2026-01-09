@@ -19,25 +19,45 @@ tox -e py
 
 # Run tests across all Python versions (3.10-3.14)
 tox
+
+# Run pre-commit hooks
+pre-commit run --all-files
 ```
 
 ## Architecture
 
-This is a single-module Python linter (`unused_import_linter.py`) that detects and autofixes unused imports using AST analysis.
+This is a multi-module Python linter that detects and autofixes unused imports using AST analysis.
+
+### Package Structure
+
+```
+remove_unused_imports/
+  __init__.py          # Public API exports
+  __main__.py          # Entry point for `python -m remove_unused_imports`
+  _main.py             # CLI and orchestration (main, check_file, collect_python_files)
+  _data.py             # Data classes (ImportInfo)
+  _ast_helpers.py      # AST visitors (ImportExtractor, NameUsageCollector, etc.)
+  _detection.py        # Detection logic (find_unused_imports)
+  _autofix.py          # Autofix logic (remove_unused_imports)
+```
 
 ### Core Components
 
-**Import Extraction** (`ImportExtractor`): AST visitor that collects all imports, tracking the bound name (considering aliases), module, and line numbers. Skips `__future__` imports.
+**`_data.py`**: Contains `ImportInfo` dataclass for storing import metadata.
 
-**Usage Collection** (`NameUsageCollector`): AST visitor that finds all name usages. Only counts `ast.Load` contexts (not `Store`) to correctly handle shadowed imports. Explicitly visits function decorators, annotations, default arguments, and class bases.
+**`_ast_helpers.py`**: AST visitors and helpers:
+- `ImportExtractor`: Collects all imports, tracking bound names, modules, line numbers. Skips `__future__` imports.
+- `NameUsageCollector`: Finds all name usages. Only counts `ast.Load` contexts (not `Store`) for correct shadowing.
+- `StringAnnotationVisitor`: Parses string literals as type annotations for forward references.
+- `collect_dunder_all_names`: Extracts names from `__all__` so exports aren't flagged.
 
-**String Annotation Handling** (`StringAnnotationVisitor`): Parses string literals as type annotations to detect forward reference usage.
+**`_detection.py`**: Contains `find_unused_imports()` which coordinates the visitors.
 
-**`__all__` Handling** (`collect_dunder_all_names`): Extracts names from `__all__` assignments so exported names aren't flagged as unused.
-
-**Autofix** (`remove_unused_imports`): Removes unused imports while preserving valid Python. Key behavior:
+**`_autofix.py`**: Contains `remove_unused_imports()` which:
 - Partial removal from multi-import statements (`from X import a, b, c` → `from X import a`)
-- Inserts `pass` when removing imports would leave a block empty (uses `_find_block_only_imports`)
+- Inserts `pass` when removing imports would leave a block empty
+
+**`_main.py`**: CLI entry point and file handling (`main`, `check_file`, `collect_python_files`).
 
 ### Test Organization
 

@@ -1,4 +1,4 @@
-# unused-import-linter
+# remove-unused-imports
 
 [![build status](https://github.com/cmyui/unused-import-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/cmyui/unused-import-detector/actions/workflows/ci.yml)
 
@@ -7,7 +7,7 @@ A Python linter that detects and automatically removes unused imports.
 ## Installation
 
 ```bash
-pip install unused-import-linter
+pip install remove-unused-imports
 ```
 
 Or install from source:
@@ -22,16 +22,16 @@ pip install .
 
 ```bash
 # Check a single file
-unused-import-linter myfile.py
+remove-unused-imports myfile.py
 
 # Check a directory recursively
-unused-import-linter src/
+remove-unused-imports src/
 
 # Automatically fix unused imports
-unused-import-linter --fix myfile.py
+remove-unused-imports --fix myfile.py
 
 # Quiet mode (summary only)
-unused-import-linter -q src/
+remove-unused-imports -q src/
 ```
 
 ### Exit codes
@@ -114,15 +114,22 @@ tox -e py
 
 ```
 .
-├── unused_import_linter.py     # Main module
+├── remove_unused_imports/
+│   ├── __init__.py          # Public API exports
+│   ├── __main__.py          # Entry point for python -m
+│   ├── _main.py             # CLI and orchestration
+│   ├── _data.py             # Data classes
+│   ├── _ast_helpers.py      # AST visitors
+│   ├── _detection.py        # Detection logic
+│   └── _autofix.py          # Autofix logic
 ├── tests/
-│   ├── detection_test.py       # Basic detection tests
-│   ├── aliased_imports_test.py # Aliased import tests
-│   ├── shadowed_imports_test.py# Shadowed import tests
-│   ├── special_imports_test.py # __future__, __all__, TYPE_CHECKING
-│   ├── type_annotations_test.py# Type annotation tests
-│   ├── autofix_test.py         # Autofix tests
-│   └── file_operations_test.py # File/directory tests
+│   ├── detection_test.py
+│   ├── aliased_imports_test.py
+│   ├── shadowed_imports_test.py
+│   ├── special_imports_test.py
+│   ├── type_annotations_test.py
+│   ├── autofix_test.py
+│   └── file_operations_test.py
 ├── pyproject.toml
 ├── tox.ini
 └── .github/workflows/ci.yml

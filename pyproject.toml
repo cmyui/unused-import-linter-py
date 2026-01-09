@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "unused-import-linter"
+name = "remove-unused-imports"
 version = "0.1.0"
 description = "A Python linter that detects and autofixes unused imports"
 readme = "README.md"
@@ -27,7 +27,7 @@ classifiers = [
 ]
 
 [project.scripts]
-unused-import-linter = "unused_import_linter:main"
+remove-unused-imports = "remove_unused_imports:main"
 
 [project.optional-dependencies]
 dev = [
@@ -37,7 +37,7 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["unused_import_linter"]
+packages = ["remove_unused_imports"]
 
 [tool.coverage.run]
 plugins = ["covdefaults"]
