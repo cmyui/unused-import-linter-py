@@ -16,7 +16,8 @@ from pathlib import Path
 class ImportInfo:
     """Information about an import statement."""
 
-    name: str  # The name as it appears in code (alias if present, otherwise original)
+    # The name as it appears in code (alias if present, otherwise original)
+    name: str
     module: str  # The module being imported from (empty for 'import X')
     original_name: str  # The original name before aliasing
     lineno: int
@@ -56,7 +57,7 @@ class ImportExtractor(ast.NodeVisitor):
                     is_from_import=False,
                     full_node_lineno=node.lineno,
                     full_node_end_lineno=node.end_lineno or node.lineno,
-                )
+                ),
             )
         self.generic_visit(node)
 
@@ -85,7 +86,7 @@ class ImportExtractor(ast.NodeVisitor):
                     is_from_import=True,
                     full_node_lineno=node.lineno,
                     full_node_end_lineno=node.end_lineno or node.lineno,
-                )
+                ),
             )
         self.generic_visit(node)
 
@@ -147,9 +148,9 @@ class NameUsageCollector(ast.NodeVisitor):
         # Check default argument values
         for default in node.args.defaults:
             self.visit(default)
-        for default in node.args.kw_defaults:
-            if default is not None:
-                self.visit(default)
+        for kw_default in node.args.kw_defaults:
+            if kw_default is not None:
+                self.visit(kw_default)
         # Visit body
         for child in node.body:
             self.visit(child)
@@ -170,9 +171,9 @@ class NameUsageCollector(ast.NodeVisitor):
         # Check default argument values
         for default in node.args.defaults:
             self.visit(default)
-        for default in node.args.kw_defaults:
-            if default is not None:
-                self.visit(default)
+        for kw_default in node.args.kw_defaults:
+            if kw_default is not None:
+                self.visit(kw_default)
         for child in node.body:
             self.visit(child)
 
@@ -193,8 +194,7 @@ class NameUsageCollector(ast.NodeVisitor):
         self.visit(node.annotation)
         if node.value:
             self.visit(node.value)
-        if node.target:
-            self.visit(node.target)
+        self.visit(node.target)
 
 
 class StringAnnotationVisitor(ast.NodeVisitor):
@@ -294,7 +294,8 @@ def find_unused_imports(source: str) -> list[ImportInfo]:
 
 
 def _find_block_only_imports(
-    tree: ast.AST, unused_import_lines: set[int]
+    tree: ast.AST,
+    unused_import_lines: set[int],
 ) -> dict[int, bool]:
     """Find imports that, when removed, would leave their block empty.
 
@@ -321,10 +322,6 @@ def _find_block_only_imports(
 
     def check_body(body: list[ast.stmt]) -> None:
         """Check if removing unused imports would leave this block empty."""
-        # Find all imports in this body
-        import_stmts = [
-            stmt for stmt in body if isinstance(stmt, (ast.Import, ast.ImportFrom))
-        ]
         # Check if all statements are imports that will be removed
         all_are_unused_imports = all(
             isinstance(stmt, (ast.Import, ast.ImportFrom))
@@ -337,16 +334,19 @@ def _find_block_only_imports(
 
     for node in ast.walk(tree):
         if isinstance(node, block_parents):
-            if hasattr(node, "body") and node.body:
+            if node.body:
                 check_body(node.body)
-            if hasattr(node, "orelse") and node.orelse:
+
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.While, ast.If, ast.Try)):
+            if node.orelse:
                 check_body(node.orelse)
-            if hasattr(node, "finalbody") and node.finalbody:
+
+        if isinstance(node, ast.Try):
+            if node.finalbody:
                 check_body(node.finalbody)
-            if hasattr(node, "handlers"):
-                for handler in node.handlers:
-                    if handler.body:
-                        check_body(handler.body)
+            for handler in node.handlers:
+                if handler.body:
+                    check_body(handler.body)
 
     return needs_pass
 
@@ -406,7 +406,7 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
     # Determine which lines to remove entirely, modify, or replace with pass
     lines_to_remove: set[int] = set()
     lines_to_pass: set[int] = set()  # Replace with 'pass' instead of removing
-    lines_to_modify: dict[int, tuple[ast.AST, list[str]]] = {}
+    lines_to_modify: dict[int, tuple[ast.Import | ast.ImportFrom, list[str]]] = {}
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -424,7 +424,10 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
                             lines_to_remove.add(i)
                     else:
                         # Remove the whole line(s)
-                        for i in range(node.lineno - 1, (node.end_lineno or node.lineno)):
+                        for i in range(
+                            node.lineno - 1,
+                            (node.end_lineno or node.lineno),
+                        ):
                             lines_to_remove.add(i)
                 else:
                     # Only some imports are unused, need to modify the line
@@ -488,7 +491,9 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
                 parts = [alias_map[n] for n in remaining if n in alias_map]
                 module = node.module or ""
                 level = "." * node.level
-                new_line = f"{indent_str}from {level}{module} import {', '.join(parts)}\n"
+                new_line = (
+                    f"{indent_str}from {level}{module} import {', '.join(parts)}\n"
+                )
 
             new_lines.append(new_line)
             # Skip any continuation lines
@@ -553,7 +558,9 @@ def check_file(filepath: Path, fix: bool = False) -> tuple[int, list[str]]:
         new_source = remove_unused_imports(source, unused)
         if new_source != source:
             filepath.write_text(new_source)
-            messages.append(f"Fixed {len(unused)} unused import(s) in {filepath}")
+            messages.append(
+                f"Fixed {len(unused)} unused import(s) in {filepath}",
+            )
 
     return len(unused), messages
 
@@ -625,7 +632,7 @@ Examples:
     if total_unused > 0:
         action = "Fixed" if args.fix else "Found"
         print(
-            f"\n{action} {total_unused} unused import(s) in {total_files_with_issues} file(s)"
+            f"\n{action} {total_unused} unused import(s) in {total_files_with_issues} file(s)",
         )
         return 0 if args.fix else 1
     else:

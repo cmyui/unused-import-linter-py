@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from unused_import_linter import find_unused_imports, remove_unused_imports
-
+from unused_import_linter import find_unused_imports
+from unused_import_linter import remove_unused_imports
 
 # =============================================================================
 # Basic removal

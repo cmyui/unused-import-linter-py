@@ -1,12 +1,10 @@
 """Tests for file and directory operations."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from unused_import_linter import check_file, collect_python_files
-
+from unused_import_linter import check_file
+from unused_import_linter import collect_python_files
 
 # =============================================================================
 # check_file
