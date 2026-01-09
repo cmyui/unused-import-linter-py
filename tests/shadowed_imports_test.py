@@ -119,26 +119,115 @@ def test_used_before_shadowed_noop(s):
 
 
 @pytest.mark.parametrize(
-    's',
+    ('s', 'expected'),
     (
-        # Function parameter shadowing - known limitation
+        # Function parameter shadowing
         pytest.param(
             'from operator import add\n'
             '\n'
             'def process(add=None):\n'
             '    return add\n',
-            id='function parameter shadowing - known limitation',
+            {'add'},
+            id='function parameter shadowing',
+        ),
+        # Nested function parameter shadowing
+        pytest.param(
+            'from math import sqrt\n'
+            '\n'
+            'def outer():\n'
+            '    def inner(sqrt):\n'
+            '        return sqrt\n'
+            '    return inner\n',
+            {'sqrt'},
+            id='nested function parameter shadowing',
+        ),
+        # Lambda parameter shadowing
+        pytest.param(
+            'from operator import mul\n'
+            'f = lambda mul: mul * 2\n',
+            {'mul'},
+            id='lambda parameter shadowing',
+        ),
+        # For loop variable shadowing in function
+        pytest.param(
+            'from itertools import chain\n'
+            '\n'
+            'def process():\n'
+            '    for chain in range(10):\n'
+            '        print(chain)\n',
+            {'chain'},
+            id='for loop variable shadowing in function',
+        ),
+        # Local variable shadowing in function
+        pytest.param(
+            'from collections import Counter\n'
+            '\n'
+            'def process():\n'
+            '    Counter = {}\n'
+            '    return Counter\n',
+            {'Counter'},
+            id='local variable shadowing in function',
         ),
     ),
 )
-def test_function_parameter_shadowing_known_limitation(s):
-    """Test known limitation: function parameter shadowing not detected.
+def test_function_scope_shadowing(s, expected):
+    """Test that imports shadowed by function-local names ARE flagged as unused.
 
-    The linter doesn't do full scope analysis, so when a function parameter
-    shadows an import and is used within the function, the linter incorrectly
-    thinks the import is used. This is a false negative but acceptable for
-    a simple linter without full scope analysis.
+    With full scope analysis, the linter correctly detects when a name used
+    inside a function refers to a local binding (parameter, loop variable, etc.)
+    rather than the module-level import.
     """
-    # This returns empty set (false negative) because 'add' is used in
-    # 'return add', and the linter doesn't know it refers to the parameter
+    assert _get_unused_names(s) == expected
+
+
+@pytest.mark.parametrize(
+    's',
+    (
+        # Import used in function that doesn't shadow it
+        pytest.param(
+            'from operator import add\n'
+            '\n'
+            'def process(x, y):\n'
+            '    return add(x, y)\n',
+            id='import used in function body',
+        ),
+        # Import used in default argument
+        pytest.param(
+            'from operator import add\n'
+            '\n'
+            'def process(op=add):\n'
+            '    return op(1, 2)\n',
+            id='import used in default argument',
+        ),
+        # Import used in decorator
+        pytest.param(
+            'from functools import lru_cache\n'
+            '\n'
+            '@lru_cache\n'
+            'def expensive(x):\n'
+            '    return x * 2\n',
+            id='import used in decorator',
+        ),
+        # Import used in nested function (closure)
+        pytest.param(
+            'from operator import add\n'
+            '\n'
+            'def outer():\n'
+            '    def inner():\n'
+            '        return add(1, 2)\n'
+            '    return inner\n',
+            id='import used in closure',
+        ),
+        # Import used in annotation
+        pytest.param(
+            'from typing import List\n'
+            '\n'
+            'def process(items: List[int]) -> List[str]:\n'
+            '    return [str(x) for x in items]\n',
+            id='import used in annotation',
+        ),
+    ),
+)
+def test_function_scope_usage_noop(s):
+    """Test that imports used at function scope are NOT flagged."""
     assert _get_unused_names(s) == set()

@@ -52,7 +52,8 @@ remove-unused-imports -q src/
   - Default argument values
   - `__all__` exports
 - Skips `__future__` imports (they have side effects)
-- Detects shadowed imports (assignment, loop variables, `with` targets, etc.)
+- Detects shadowed imports (assignment, function parameters, loop variables, `with` targets, etc.)
+- Full scope analysis (correctly handles function parameters that shadow imports)
 - Autofix safely handles empty blocks by inserting `pass`
 
 ## Examples
@@ -82,7 +83,6 @@ def get_home() -> Optional[Path]:
 
 ## Known Limitations
 
-- **No scope analysis**: Function parameters that shadow imports aren't detected as shadowing if used within the function body
 - **Star imports ignored**: `from X import *` cannot be analyzed
 
 ## Development
