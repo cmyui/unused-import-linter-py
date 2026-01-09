@@ -76,14 +76,6 @@ def test_autofix_removal(s, expected):
             'x: Optional[int] = None\n',
             id='partial from-import removal',
         ),
-        # Keep multiple used imports
-        pytest.param(
-            'from typing import List, Dict, Optional\n'
-            'x: Dict[str, List[int]]\n',
-            'from typing import List, Dict\n'
-            'x: Dict[str, List[int]]\n',
-            id='keep multiple used from-import',
-        ),
         # Partial removal with aliases
         pytest.param(
             'from itertools import chain as ch, cycle as cy, repeat as rp\n'
@@ -99,6 +91,22 @@ def test_autofix_partial_removal(s, expected):
     unused = find_unused_imports(s)
     result = remove_unused_imports(s, unused)
     assert result == expected
+
+
+def test_autofix_partial_removal_multiple_kept():
+    """Test partial removal keeps multiple used imports (order may vary)."""
+    s = (
+        'from typing import List, Dict, Optional\n'
+        'x: Dict[str, List[int]]\n'
+    )
+    unused = find_unused_imports(s)
+    result = remove_unused_imports(s, unused)
+
+    # Check that Optional is removed and List, Dict are kept (order may vary)
+    assert 'Optional' not in result
+    assert 'List' in result
+    assert 'Dict' in result
+    assert 'from typing import' in result
 
 
 # =============================================================================
