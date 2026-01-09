@@ -208,6 +208,38 @@ def collect_string_annotation_names(tree: ast.AST) -> set[str]:
     return visitor.used_names
 
 
+def collect_dunder_all_names(tree: ast.AST) -> set[str]:
+    """Collect names exported via __all__.
+
+    Names in __all__ are considered "used" because they're part of the public API.
+    """
+    names: set[str] = set()
+
+    for node in ast.walk(tree):
+        # Look for __all__ = [...] or __all__ += [...]
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    names.update(_extract_string_list(node.value))
+        elif isinstance(node, ast.AugAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == "__all__":
+                names.update(_extract_string_list(node.value))
+
+    return names
+
+
+def _extract_string_list(node: ast.expr) -> set[str]:
+    """Extract string values from a list/tuple literal."""
+    names: set[str] = set()
+
+    if isinstance(node, (ast.List, ast.Tuple)):
+        for elt in node.elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                names.add(elt.value)
+
+    return names
+
+
 def find_unused_imports(source: str) -> list[ImportInfo]:
     """Find all unused imports in the given source code."""
     try:
@@ -226,7 +258,11 @@ def find_unused_imports(source: str) -> list[ImportInfo]:
 
     # Also check string annotations
     string_names = collect_string_annotation_names(tree)
-    all_used_names = usage_collector.used_names | string_names
+
+    # Also check __all__ exports (names in __all__ are considered used)
+    dunder_all_names = collect_dunder_all_names(tree)
+
+    all_used_names = usage_collector.used_names | string_names | dunder_all_names
 
     # Find unused imports
     unused: list[ImportInfo] = []
