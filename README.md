@@ -1,6 +1,6 @@
 # unused-import-linter
 
-[![CI](https://github.com/cmyui/unused-import-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/cmyui/unused-import-detector/actions/workflows/ci.yml)
+[![build status](https://github.com/cmyui/unused-import-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/cmyui/unused-import-detector/actions/workflows/ci.yml)
 
 A Python linter that detects and automatically removes unused imports.
 
