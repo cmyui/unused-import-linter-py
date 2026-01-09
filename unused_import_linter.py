@@ -62,6 +62,11 @@ class ImportExtractor(ast.NodeVisitor):
 
     def visit_FromImport(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
+
+        # Skip __future__ imports - they have side effects and are never "unused"
+        if module == "__future__":
+            return
+
         for alias in node.names:
             if alias.name == "*":
                 # Star imports can't be analyzed for unused names
