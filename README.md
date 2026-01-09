@@ -1,6 +1,6 @@
 # remove-unused-imports
 
-[![build status](https://github.com/cmyui/unused-import-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/cmyui/unused-import-detector/actions/workflows/ci.yml)
+[![build status](https://github.com/cmyui/remove-unused-imports-py/actions/workflows/ci.yml/badge.svg)](https://github.com/cmyui/remove-unused-imports-py/actions/workflows/ci.yml)
 
 A Python linter that detects and automatically removes unused imports.
 
@@ -13,8 +13,8 @@ pip install remove-unused-imports
 Or install from source:
 
 ```bash
-git clone https://github.com/cmyui/unused-import-detector
-cd unused-import-detector
+git clone https://github.com/cmyui/remove-unused-imports-py
+cd remove-unused-imports-py
 pip install .
 ```
 
@@ -36,10 +36,10 @@ remove-unused-imports -q src/
 
 ### Exit codes
 
-| Code | Meaning |
-|------|---------|
-| 0 | No unused imports found (or `--fix` was used) |
-| 1 | Unused imports found |
+| Code | Meaning                                       |
+| ---- | --------------------------------------------- |
+| 0    | No unused imports found (or `--fix` was used) |
+| 1    | Unused imports found                          |
 
 ## Features
 
@@ -90,8 +90,8 @@ def get_home() -> Optional[Path]:
 ### Setup
 
 ```bash
-git clone https://github.com/cmyui/unused-import-detector
-cd unused-import-detector
+git clone https://github.com/cmyui/remove-unused-imports-py
+cd remove-unused-imports-py
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
