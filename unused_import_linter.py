@@ -109,16 +109,24 @@ class NameUsageCollector(ast.NodeVisitor):
         pass
 
     def visit_Name(self, node: ast.Name) -> None:
-        self.used_names.add(node.id)
+        # Only count Load contexts as usages, not Store (assignment targets)
+        # Store contexts: x = ..., for x in ..., with ... as x, except ... as x
+        if isinstance(node.ctx, ast.Load):
+            self.used_names.add(node.id)
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         # For attribute access like 'os.path', we need to track 'os'
+        # Only count Load contexts (reading), not Store (assignment targets)
+        if not isinstance(node.ctx, ast.Load):
+            self.generic_visit(node)
+            return
+
         # Walk up to find the root name
-        current = node
+        current: ast.expr = node
         while isinstance(current, ast.Attribute):
             current = current.value
-        if isinstance(current, ast.Name):
+        if isinstance(current, ast.Name) and isinstance(current.ctx, ast.Load):
             self.used_names.add(current.id)
         self.generic_visit(node)
 
