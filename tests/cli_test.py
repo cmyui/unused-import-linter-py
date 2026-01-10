@@ -5,12 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from remove_unused_imports._main import check_file
 from remove_unused_imports._main import collect_python_files
 from remove_unused_imports._main import main
-
 
 # =============================================================================
 # check_file edge cases
@@ -62,18 +59,14 @@ def test_check_file_regular_import_message(tmp_path):
 # =============================================================================
 
 
-def test_collect_non_python_file():
+def test_collect_non_python_file(tmp_path: Path) -> None:
     """Test that non-.py files are skipped."""
-    from pathlib import Path
-    import tempfile
+    # Create a non-Python file
+    txt_file = tmp_path / "readme.txt"
+    txt_file.write_text("hello")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        # Create a non-Python file
-        txt_file = Path(tmp) / "readme.txt"
-        txt_file.write_text("hello")
-
-        files = collect_python_files([txt_file])
-        assert files == []
+    files = collect_python_files([txt_file])
+    assert files == []
 
 
 # =============================================================================

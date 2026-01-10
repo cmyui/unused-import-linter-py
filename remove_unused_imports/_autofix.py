@@ -66,6 +66,87 @@ def _find_block_only_imports(
     return needs_pass
 
 
+def _get_import_names(node: ast.Import | ast.ImportFrom) -> set[str]:
+    """Get all bound names from an import node."""
+    names: set[str] = set()
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            names.add(alias.asname or alias.name.split(".")[0])
+    else:  # ImportFrom
+        for alias in node.names:
+            if alias.name != "*":
+                names.add(alias.asname or alias.name)
+    return names
+
+
+def _find_semicolon_removals(
+    tree: ast.AST,
+    source: str,
+    unused_names: set[str],
+) -> dict[int, list[tuple[int, int]]]:
+    """Find surgical removal ranges for imports on semicolon lines.
+
+    Returns dict mapping line index to list of (start_col, end_col) ranges
+    to remove from that line.
+    """
+    lines = source.splitlines(keepends=True)
+    removals: dict[int, list[tuple[int, int]]] = {}
+
+    # Group all statements by line number, sorted by column
+    stmts_by_line: dict[int, list[ast.stmt]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.stmt) and hasattr(node, 'lineno'):
+            line_idx = node.lineno - 1
+            if line_idx not in stmts_by_line:
+                stmts_by_line[line_idx] = []
+            stmts_by_line[line_idx].append(node)
+
+    # Sort statements by column offset
+    for stmts in stmts_by_line.values():
+        stmts.sort(key=lambda n: n.col_offset)
+
+    for line_idx, stmts in stmts_by_line.items():
+        if len(stmts) <= 1:
+            continue
+
+        line = lines[line_idx] if line_idx < len(lines) else ""
+        line_removals: list[tuple[int, int]] = []
+
+        for i, stmt in enumerate(stmts):
+            if not isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                continue
+
+            # Check if ALL names in this import are unused
+            import_names = _get_import_names(stmt)
+            if not import_names.issubset(unused_names):
+                continue
+
+            # This import should be removed - calculate the range
+            start_col = stmt.col_offset
+            end_col = stmt.end_col_offset or len(line.rstrip('\n'))
+
+            # Determine if we need to include semicolon before or after
+            if i == 0:
+                # First statement - remove trailing "; "
+                # Find the semicolon after end_col
+                rest = line[end_col:]
+                semi_match = len(rest) - len(rest.lstrip('; '))
+                end_col += semi_match
+            else:
+                # Not first - remove leading "; "
+                # Find semicolon before start_col
+                prefix = line[:start_col]
+                semi_match = len(prefix) - len(prefix.rstrip('; '))
+                start_col -= semi_match
+
+            line_removals.append((start_col, end_col))
+
+        if line_removals:
+            removals[line_idx] = line_removals
+
+    return removals
+
+
 def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
     """Remove unused imports from the source code."""
     if not unused_imports:
@@ -73,18 +154,27 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
 
     lines = source.splitlines(keepends=True)
 
+    # Parse to analyze the source
+    tree = ast.parse(source)
+
+    unused_names = {imp.name for imp in unused_imports}
+
+    # Find surgical removals for semicolon lines
+    semicolon_removals = _find_semicolon_removals(tree, source, unused_names)
+
     # Group unused imports by their statement line
     # For multi-name imports like 'from X import a, b, c', we may only remove some
     imports_by_line: dict[int, list[ImportInfo]] = {}
 
     for imp in unused_imports:
         line_idx = imp.full_node_lineno - 1
+        # Skip imports that will be handled by semicolon removal
+        if line_idx in semicolon_removals:
+            continue
         if line_idx not in imports_by_line:
             imports_by_line[line_idx] = []
         imports_by_line[line_idx].append(imp)
 
-    # Parse again to get all imports on each line
-    tree = ast.parse(source)
     all_imports_by_line: dict[int, list[str]] = {}
 
     for node in ast.walk(tree):
@@ -214,6 +304,17 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
             # Skip any continuation lines
             end_line = node.end_lineno or node.lineno
             i = end_line
+        elif i in semicolon_removals:
+            # Apply surgical removals to this line
+            line = lines[i]
+            # Apply removals in reverse order to preserve column offsets
+            for start_col, end_col in reversed(semicolon_removals[i]):
+                line = line[:start_col] + line[end_col:]
+            # Only add the line if there's content left after removals
+            stripped = line.strip()
+            if stripped and stripped != "\n":
+                new_lines.append(line)
+            i += 1
         else:
             new_lines.append(lines[i])
             i += 1

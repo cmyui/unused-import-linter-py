@@ -568,3 +568,62 @@ def test_autofix_blank_line_cleanup(s, expected):
     unused = find_unused_imports(s)
     result = remove_unused_imports(s, unused)
     assert result == expected
+
+
+# =============================================================================
+# Semicolon handling (multiple statements on same line)
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ('s', 'expected'),
+    (
+        # Two unused imports on same line - can remove both
+        pytest.param(
+            'import os; import sys\n',
+            '',
+            id='two unused imports same line',
+        ),
+    ),
+)
+def test_autofix_semicolon_all_unused(s, expected):
+    """Test that all-unused imports on same line get removed."""
+    unused = find_unused_imports(s)
+    result = remove_unused_imports(s, unused)
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    ('s', 'expected'),
+    (
+        # Import + statement on same line - surgically remove import
+        pytest.param(
+            'import os; x = 1\n',
+            'x = 1\n',
+            id='import then statement',
+        ),
+        # Statement + import on same line - surgically remove import
+        pytest.param(
+            'x = 1; import os\n',
+            'x = 1\n',
+            id='statement then import',
+        ),
+        # One used, one unused import on same line - remove unused
+        pytest.param(
+            'import os; import sys\nprint(os.getcwd())\n',
+            'import os\nprint(os.getcwd())\n',
+            id='mixed used unused imports same line',
+        ),
+        # From-import + statement - surgically remove import
+        pytest.param(
+            'from pathlib import Path; x = 1\n',
+            'x = 1\n',
+            id='from-import then statement',
+        ),
+    ),
+)
+def test_autofix_semicolon_surgical_removal(s, expected):
+    """Test surgical removal of imports from semicolon-separated lines."""
+    unused = find_unused_imports(s)
+    result = remove_unused_imports(s, unused)
+    assert result == expected
