@@ -262,7 +262,7 @@ def test_cross_file_warn_implicit_reexports(tmp_path):
     )
 
     message_text = " ".join(messages)
-    assert "Implicit re-export" in message_text
+    assert "Implicit Re-exports" in message_text
     assert "List" in message_text
 
 
@@ -274,7 +274,7 @@ def test_cross_file_warn_circular(tmp_path):
     count, messages = check_cross_file(tmp_path / "a.py", warn_circular=True)
 
     message_text = " ".join(messages)
-    assert "Circular import" in message_text
+    assert "Circular Imports" in message_text
 
 
 def test_cross_file_directory_mode(tmp_path):
@@ -341,7 +341,7 @@ def test_main_cross_file_with_warn_implicit_reexports(tmp_path, monkeypatch, cap
     main()
 
     captured = capsys.readouterr()
-    assert "Implicit re-export" in captured.out
+    assert "Implicit Re-exports" in captured.out
 
 
 def test_main_cross_file_with_warn_circular(tmp_path, monkeypatch, capsys):
@@ -356,7 +356,7 @@ def test_main_cross_file_with_warn_circular(tmp_path, monkeypatch, capsys):
     main()
 
     captured = capsys.readouterr()
-    assert "Circular import" in captured.out
+    assert "Circular Imports" in captured.out
 
 
 def test_main_cross_file_fix(tmp_path, monkeypatch, capsys):
@@ -423,7 +423,9 @@ def test_cross_file_empty_project(tmp_path):
     count, messages = check_cross_file(tmp_path / "main.py")
 
     assert count == 0
-    assert len(messages) == 0
+    # Messages now includes summary even when no issues
+    message_text = " ".join(messages)
+    assert "No unused imports found" in message_text
 
 
 def test_cross_file_nested_directories(tmp_path):

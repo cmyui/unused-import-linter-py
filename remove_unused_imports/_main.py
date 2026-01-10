@@ -8,6 +8,7 @@ from remove_unused_imports._autofix import remove_unused_imports
 from remove_unused_imports._cross_file import analyze_cross_file
 from remove_unused_imports._data import ImportInfo
 from remove_unused_imports._detection import find_unused_imports
+from remove_unused_imports._format import format_cross_file_results
 from remove_unused_imports._graph import build_import_graph
 from remove_unused_imports._graph import build_import_graph_from_directory
 
@@ -68,8 +69,6 @@ def check_cross_file(
     Returns:
         Tuple of (number of issues found, list of messages)
     """
-    messages: list[str] = []
-
     # Build import graph
     if path.is_file():
         graph = build_import_graph(path)
@@ -79,61 +78,50 @@ def check_cross_file(
     # Analyze
     result = analyze_cross_file(graph)
 
-    # Format results
-    total_issues = 0
+    # Count total issues
+    total_issues = sum(len(unused) for unused in result.unused_imports.values())
 
-    # Unused imports
-    for file_path, unused in sorted(result.unused_imports.items()):
-        total_issues += len(unused)
-        if not quiet:
-            for imp in unused:
-                if imp.is_from_import:
-                    msg = f"{file_path}:{imp.lineno}: Unused import '{imp.name}' from '{imp.module}'"
-                else:
-                    msg = f"{file_path}:{imp.lineno}: Unused import '{imp.name}'"
-                messages.append(msg)
+    # Fix files if requested
+    fixed_files: dict[Path, int] = {}
+    if fix:
+        for file_path, unused in result.unused_imports.items():
+            count = _fix_file_silent(file_path, unused)
+            if count > 0:
+                fixed_files[file_path] = count
 
-        if fix:
-            _fix_file(file_path, unused, messages)
-
-    # Implicit re-exports (warnings)
-    if warn_implicit_reexports and result.implicit_reexports:
-        if not quiet:
-            for reexport in result.implicit_reexports:
-                used_by_names = ", ".join(str(p.name) for p in sorted(reexport.used_by))
-                msg = (
-                    f"{reexport.source_file}: "
-                    f"Implicit re-export '{reexport.import_name}' "
-                    f"(used by: {used_by_names}, not in __all__)"
-                )
-                messages.append(msg)
-
-    # Circular imports (warnings)
-    if warn_circular and result.circular_imports:
-        if not quiet:
-            for cycle in result.circular_imports:
-                cycle_names = " -> ".join(str(p.name) for p in cycle)
-                msg = f"Circular import: {cycle_names} -> {cycle[0].name}"
-                messages.append(msg)
+    # Format results using the new formatter
+    messages = format_cross_file_results(
+        result=result,
+        base_path=path,
+        fix=fix,
+        warn_implicit_reexports=warn_implicit_reexports,
+        warn_circular=warn_circular,
+        quiet=quiet,
+        fixed_files=fixed_files,
+    )
 
     return total_issues, messages
 
 
-def _fix_file(
+def _fix_file_silent(
     file_path: Path,
     unused: list[ImportInfo],
-    messages: list[str],
-) -> None:
-    """Fix unused imports in a file."""
+) -> int:
+    """Fix unused imports in a file.
+
+    Returns:
+        Number of imports fixed (0 if file couldn't be read/written)
+    """
     try:
         source = file_path.read_text()
     except (OSError, UnicodeDecodeError):
-        return
+        return 0
 
     new_source = remove_unused_imports(source, unused)
     if new_source != source:
         file_path.write_text(new_source)
-        messages.append(f"Fixed {len(unused)} unused import(s) in {file_path}")
+        return len(unused)
+    return 0
 
 
 def collect_python_files(paths: list[Path]) -> list[Path]:
@@ -264,17 +252,14 @@ def _main_cross_file(args: argparse.Namespace) -> int:
         quiet=args.quiet,
     )
 
-    if not args.quiet:
-        for msg in messages:
-            print(msg)
+    # The formatter already includes the summary, so just print all messages
+    for msg in messages:
+        print(msg)
 
-    if total_issues > 0:
-        action = "Fixed" if args.fix else "Found"
-        print(f"\n{action} {total_issues} unused import(s)")
-        return 0 if args.fix else 1
-    else:
-        print("No unused imports found")
-        return 0
+    # Return code: 0 if no issues or fixed, 1 if issues found and not fixed
+    if total_issues > 0 and not args.fix:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
