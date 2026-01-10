@@ -404,6 +404,21 @@ def test_main_cross_file_quiet(tmp_path, monkeypatch, capsys):
 # =============================================================================
 
 
+def test_cross_file_no_python_files_in_directory(tmp_path, monkeypatch, capsys):
+    """Cross-file mode with directory containing no Python files."""
+    # Create a directory with only non-Python files
+    (tmp_path / "readme.txt").write_text("hello")
+    (tmp_path / "data.json").write_text("{}")
+
+    monkeypatch.setattr(sys, 'argv', ['prog', str(tmp_path)])
+
+    result = main()
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "No unused imports found" in captured.out
+
+
 def test_cross_file_syntax_error_in_imported_file(tmp_path):
     """Should handle syntax errors in imported files gracefully."""
     (tmp_path / "main.py").write_text("import broken\n")
