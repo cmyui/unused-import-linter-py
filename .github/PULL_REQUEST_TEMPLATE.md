@@ -8,4 +8,4 @@
 - [ ] Tests pass (`pytest tests/ -v`)
 - [ ] Pre-commit hooks pass (`pre-commit run --all-files`)
 
-Closes #
+Closes #<!-- issue number -->
