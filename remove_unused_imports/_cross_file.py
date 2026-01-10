@@ -380,9 +380,10 @@ class CrossFileAnalyzer:
     def _has_reachable_ancestor(self, file_path: Path, reachable: set[Path]) -> bool:
         """Check if any ancestor package of file_path is in the reachable set."""
         # Walk up the directory tree looking for __init__.py files
-        current = file_path.parent
+        # Use resolve() to ensure consistent path comparison across platforms
+        current = file_path.resolve().parent
         while current != current.parent:  # Stop at filesystem root
-            init_file = current / "__init__.py"
+            init_file = (current / "__init__.py").resolve()
             if init_file in reachable:
                 return True
             current = current.parent

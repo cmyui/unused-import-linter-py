@@ -202,9 +202,12 @@ def test_cli_subprocess(tmp_path):
         [sys.executable, '-m', 'remove_unused_imports', str(test_file)],
         capture_output=True,
         text=True,
+        encoding='utf-8',
+        errors='replace',
     )
 
     assert result.returncode == 1
+    assert result.stdout is not None
     assert "Unused import 'os'" in result.stdout
 
 

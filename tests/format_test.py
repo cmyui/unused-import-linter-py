@@ -15,14 +15,16 @@ def test_make_relative_when_under_base():
     """Should return relative path when under base."""
     base = Path("/project/src")
     path = Path("/project/src/pkg/module.py")
-    assert make_relative(path, base) == "pkg/module.py"
+    # Use Path to normalize separators for cross-platform comparison
+    assert Path(make_relative(path, base)) == Path("pkg/module.py")
 
 
 def test_make_relative_when_not_under_base():
     """Should return absolute path when not under base."""
     base = Path("/project/src")
     path = Path("/other/location/module.py")
-    assert make_relative(path, base) == "/other/location/module.py"
+    # Use Path to normalize separators for cross-platform comparison
+    assert Path(make_relative(path, base)) == Path("/other/location/module.py")
 
 
 def test_format_groups_by_file():
