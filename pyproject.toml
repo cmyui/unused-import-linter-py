@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "import-analyzer-py"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A Python import analyzer with cross-file analysis, unused import detection, and autofix"
 readme = "README.md"
 license = {text = "MIT"}
@@ -48,6 +48,8 @@ packages = ["import_analyzer"]
 
 [tool.setuptools.package-data]
 import_analyzer = ["py.typed"]
+
+[tool.setuptools_scm]
 
 [tool.coverage.run]
 plugins = ["covdefaults"]
