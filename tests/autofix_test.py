@@ -582,10 +582,63 @@ def test_autofix_relative_imports(s, expected):
             'x = 1\n',
             id='leading blank line preserved single',
         ),
+        # Multiple blank lines after removed import collapse to one
+        pytest.param(
+            'import os\n'
+            '\n'
+            '\n'
+            'x = 1\n',
+            '\n'
+            'x = 1\n',
+            id='multiple blank lines collapse to one',
+        ),
+        # Multiple imports with blank lines between
+        pytest.param(
+            'import os\n'
+            '\n'
+            'import sys\n'
+            '\n'
+            'x = 1\n',
+            '\n'
+            'x = 1\n',
+            id='multiple imports with blank lines between',
+        ),
     ),
 )
 def test_autofix_blank_line_cleanup(s, expected):
     """Test blank line cleanup after removal."""
+    unused = find_unused_imports(s)
+    result = remove_unused_imports(s, unused)
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    ('s', 'expected'),
+    (
+        # Import removed but block still has code
+        pytest.param(
+            'if True:\n'
+            '    import os\n'
+            '    x = 1\n',
+            'if True:\n'
+            '    x = 1\n',
+            id='block not empty after removal',
+        ),
+        # Import removed, blank line and code remain
+        pytest.param(
+            'if True:\n'
+            '    import os\n'
+            '\n'
+            '    x = 1\n',
+            'if True:\n'
+            '\n'
+            '    x = 1\n',
+            id='block with blank line not empty after removal',
+        ),
+    ),
+)
+def test_autofix_block_not_empty(s, expected):
+    """Test import removal from blocks that still have other statements."""
     unused = find_unused_imports(s)
     result = remove_unused_imports(s, unused)
     assert result == expected
