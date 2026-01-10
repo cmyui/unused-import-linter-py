@@ -18,6 +18,7 @@ A Python import analyzer with cross-file analysis, unused import detection, circ
 | **Cascade detection**         |    ✅     |   ❌    |     ❌      |     ❌     |    ❌    |     ❌     |
 | **Circular import warnings**  |    ✅     |   ❌    |     ❌      |     ❌     |    ❌    |     ❌     |
 | **Unreachable file warnings** |    ✅     |   ❌    |     ❌      |     ❌     |    ❌    |     ❌     |
+| **Indirect import fix**       |    ✅     |   ❌    |     ❌      |     ❌     |    ❌    |     ❌     |
 | Respects `__all__`            |    ✅     |   ✅    |     ⚠️³     |     ✅     |    ✅    |     ✅     |
 | noqa: F401 support            |    ✅     |   ✅    |     ✅      |    ❌⁴     |   ✅⁵    |     ✅     |
 | Full scope analysis (LEGB)    |    ✅     |   ✅    |     ⚠️⁶     |    ⚠️⁶     |    ✅    |     ✅     |
@@ -43,6 +44,7 @@ A Python import analyzer with cross-file analysis, unused import detection, circ
 
 - **Re-export preservation**: If `utils.py` imports `List` and `main.py` does `from utils import List`, the import in `utils.py` is correctly identified as used
 - **Cascade detection**: When removing an unused import makes another import unused, this tool finds all of them in a single pass (note: imports in `__all__` are always preserved as public API)
+- **Indirect import fix**: When you import a name from a re-exporter instead of its original source, this tool can rewrite the import to use the direct source
 - **Circular import detection**: Warns about import cycles in your codebase
 - **Unreachable file detection**: Identifies files that become dead code after fixing imports
 
@@ -82,7 +84,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/cmyui/import-analyzer-py
-    rev: v0.1.2  # or latest version
+    rev: v0.1.2 # or latest version
     hooks:
       # Cross-file analysis (recommended) - analyzes entire project
       - id: import-analyzer
@@ -92,16 +94,16 @@ repos:
 ```
 
 The cross-file hook runs with all features enabled by default:
-`--fix-unused-imports --warn-implicit-reexports --warn-circular --warn-unreachable`
+`--fix-unused-imports --fix-indirect-imports --warn-implicit-reexports --warn-circular --warn-unreachable`
 
 To customize:
 
 ```yaml
 hooks:
   - id: import-analyzer
-    args: [.]  # check only, no warnings
+    args: [.] # check only, no warnings
   - id: import-analyzer
-    args: [., --fix-unused-imports]  # fix but no warnings
+    args: [., --fix-unused-imports] # fix but no warnings
 ```
 
 ## Usage
@@ -119,6 +121,12 @@ import-analyzer src/
 
 # Fix all unused imports (including cascaded ones)
 import-analyzer --fix-unused-imports main.py
+
+# Fix indirect imports (rewrite to use direct sources)
+import-analyzer --fix-indirect-imports main.py
+
+# Fix indirect imports including same-package re-exports (stricter)
+import-analyzer --fix-indirect-imports --strict-indirect-imports main.py
 
 # Warn about implicit re-exports (imports used by other files but not in __all__)
 import-analyzer --warn-implicit-reexports main.py
@@ -147,10 +155,10 @@ import-analyzer --single-file src/*.py
 
 ### Exit codes
 
-| Code | Meaning                                       |
-| ---- | --------------------------------------------- |
+| Code | Meaning                                                      |
+| ---- | ------------------------------------------------------------ |
 | 0    | No unused imports found (or `--fix-unused-imports` was used) |
-| 1    | Unused imports found                          |
+| 1    | Unused imports found                                         |
 
 ## Features
 
@@ -158,6 +166,7 @@ import-analyzer --single-file src/*.py
 
 - **Re-export tracking**: Imports used by other files are preserved
 - **Cascade detection**: Finds all unused imports in a single pass, even when removing one exposes another
+- **Indirect import fix**: Rewrites imports that go through re-exporters to use the original source directly
 - **Circular import detection**: Warns about import cycles
 - **Implicit re-export warnings**: Identifies re-exports missing from `__all__`
 - **Unreachable file detection**: Warns about files that become dead code after fixing imports
@@ -253,6 +262,28 @@ from typing import List   # becomes unused when helpers.py's import is removed
 Running `import-analyzer --fix-unused-imports main.py` removes all three imports in a single pass.
 
 Note: Imports listed in `__all__` are always considered "used" (public API declaration) and won't be removed by cascade detection. This matches the behavior of flake8, ruff, and autoflake.
+
+### Indirect import fix example
+
+```python
+# core.py
+CONFIG = {...}  # Original definition
+
+# utils/__init__.py
+from core import CONFIG  # Re-exports CONFIG
+
+# app.py (before)
+from utils import CONFIG  # Indirect - importing from re-exporter
+```
+
+Running `import-analyzer --fix-indirect-imports app.py` rewrites the import to use the direct source:
+
+```python
+# app.py (after)
+from core import CONFIG  # Direct - importing from source
+```
+
+This also handles aliases: if `app.py` uses `from utils import CONFIG as CONF`, it will be rewritten to `from core import CONFIG as CONF`.
 
 ### noqa comments
 

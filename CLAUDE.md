@@ -52,6 +52,7 @@ import_analyzer/
 - `ModuleInfo`: Module metadata (file path, imports, exports, defined names)
 - `ImportEdge`: Edge in import graph (importer → imported, names)
 - `ImplicitReexport`: Re-exported import not in `__all__`
+- `IndirectImport`: Import through a re-exporter instead of original source (file, name, original_name, current_source, original_source, is_same_package)
 
 **`_ast_helpers.py`**: AST visitors and helpers:
 - `ImportExtractor`: Collects all imports with `level` for relative imports. Skips `__future__`.
@@ -71,11 +72,16 @@ import_analyzer/
 - noqa keyword is case-insensitive, but codes are case-sensitive
 - Handles noqa on multi-line imports (per-alias line) and backslash continuations
 
-**`_autofix.py`**: Contains `remove_unused_imports()` which:
-- Partial removal from multi-import statements
-- Inserts `pass` when removing imports would leave a block empty
-- Handles semicolon-separated statements with surgical removal
-- Handles backslash line continuations
+**`_autofix.py`**: Contains autofix functions:
+- `remove_unused_imports()`: Removes unused imports from source
+  - Partial removal from multi-import statements
+  - Inserts `pass` when removing imports would leave a block empty
+  - Handles semicolon-separated statements with surgical removal
+  - Handles backslash line continuations
+- `fix_indirect_imports()`: Rewrites indirect imports to use direct sources
+  - Groups indirect imports by target module for efficient rewriting
+  - Preserves local aliases (e.g., `from utils import CONFIG as CONF` → `from core import CONFIG as CONF`)
+  - Merges with existing imports from the same source module
 
 **`_resolution.py`**: Module resolution:
 - `ModuleResolver`: Resolves import statements to file paths
@@ -93,13 +99,18 @@ import_analyzer/
 
 **`_cross_file.py`**: Cross-file analysis:
 - `CrossFileAnalyzer`: Main analyzer class
-- `CrossFileResult`: Results (unused_imports, implicit_reexports, circular_imports, unreachable_files)
+- `CrossFileResult`: Results (unused_imports, implicit_reexports, circular_imports, unreachable_files, indirect_imports)
 - **`__all__` as usage**: Imports listed in `__all__` are always considered "used" (public API). This matches flake8/ruff/autoflake behavior. No cascade detection through `__all__`.
 - **Cascade detection**: Iterates until stable to find all unused imports in one pass
   - When import A is unused, check if B's import (re-exported to A) is now unused
   - Tracks file reachability: imports from unreachable files don't count as consumers
   - Continues until no new unused imports are found
   - Exception: `__init__.py` files without `__all__` have implicit re-exports that can cascade
+- **Indirect import detection**: Finds imports that go through re-exporters instead of direct sources
+  - `_trace_import_source()`: Traces an import back to its original definition, tracking aliases
+  - `_is_same_package_reexport()`: Checks if re-exporter is `__init__.py` of source's package
+  - By default, same-package re-exports are allowed (package public API pattern)
+  - `--strict-indirect-imports` flag also flags same-package re-exports
 - **Unreachable file detection**: Two concepts tracked separately:
   - "Potentially unreachable" (no direct edges): Used internally for cascade
   - "Truly unreachable" (no edges AND no reachable ancestors): Reported to user
@@ -108,7 +119,7 @@ import_analyzer/
 **`_format.py`**: Output formatting:
 - Groups unused imports by file, then by line
 - Shows relative paths from entry point
-- Sections for unused imports, implicit re-exports, circular imports, unreachable files
+- Sections for unused imports, indirect imports, implicit re-exports, circular imports, unreachable files
 - Summary with counts
 
 **`_main.py`**: CLI entry point:

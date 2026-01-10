@@ -6,7 +6,7 @@
   language: python
   types: [python]
   pass_filenames: false
-  args: [., --fix-unused-imports, --warn-implicit-reexports, --warn-circular, --warn-unreachable]
+  args: [., --fix-unused-imports, --fix-indirect-imports, --warn-implicit-reexports, --warn-circular, --warn-unreachable]
 
 # Single-file analysis - only analyzes changed files (faster, less thorough)
 - id: import-analyzer-single-file
