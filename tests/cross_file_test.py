@@ -1383,3 +1383,893 @@ def test_indirect_import_no_alias_needed():
         app_content = (root / "app.py").read_text()
         assert "from core import CONFIG" in app_content
         assert "as CONFIG" not in app_content  # No alias needed
+
+
+def test_fix_indirect_from_import_preserves_function_scope():
+    """from-import fixes inside functions should stay inside the function."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'my logger'\n")
+
+        # models.py re-exports LOGGER as LOG, defines MODEL
+        (root / "models.py").write_text(
+            "from logger import LOGGER as LOG\n" "MODEL = 'my model'\n",
+        )
+
+        # app.py has function-local import with alias
+        (root / "app.py").write_text(
+            "def f():\n"
+            "    from models import LOG as LOGGER, MODEL\n"
+            "    LOGGER, MODEL\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify the fix
+        app_content = (root / "app.py").read_text()
+
+        # New import should be inside the function (same scope)
+        assert "from logger import LOGGER" in app_content
+        assert "from models import MODEL" in app_content
+
+        # Both imports should be indented (inside function)
+        lines = app_content.splitlines()
+        logger_line = next(line for line in lines if "from logger import" in line)
+        models_line = next(line for line in lines if "from models import" in line)
+        assert logger_line.startswith("    ")  # indented
+        assert models_line.startswith("    ")  # indented
+
+
+def test_fix_indirect_from_import_preserves_class_scope():
+    """from-import fixes inside class bodies should stay inside the class."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'my logger'\n")
+
+        # models.py re-exports LOGGER
+        (root / "models.py").write_text("from logger import LOGGER\n")
+
+        # app.py has class-body import
+        (root / "app.py").write_text(
+            "class MyClass:\n"
+            "    from models import LOGGER\n"
+            "    log = LOGGER\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify the fix
+        app_content = (root / "app.py").read_text()
+
+        # New import should be inside the class (same scope)
+        assert "from logger import LOGGER" in app_content
+
+        # Import should be indented (inside class)
+        lines = app_content.splitlines()
+        logger_line = next(line for line in lines if "from logger import" in line)
+        assert logger_line.startswith("    ")  # indented inside class
+
+
+# =============================================================================
+# Indirect attribute access detection tests
+# =============================================================================
+
+
+def test_indirect_attr_access_basic():
+    """Should detect module.attr pattern where attr is re-exported."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # models/__init__.py re-exports LOGGER from logger.py
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses import models + models.LOGGER
+        (root / "app.py").write_text(
+            "import models\n" "models.LOGGER.info('hello')\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect the indirect attribute access
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.file == root / "app.py"
+        assert acc.import_name == "models"
+        assert acc.attr_name == "LOGGER"
+        assert acc.original_name == "LOGGER"
+        assert acc.current_source == models / "__init__.py"
+        assert acc.original_source == root / "logger.py"
+        assert len(acc.usages) == 1  # One usage
+
+
+def test_indirect_attr_access_multiple_usages():
+    """Should track multiple usages of the same indirect attr."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses models.LOGGER multiple times
+        (root / "app.py").write_text(
+            "import models\n"
+            "models.LOGGER.info('hello')\n"
+            "models.LOGGER.debug('debug')\n"
+            "x = models.LOGGER\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert len(acc.usages) == 3  # Three usages
+
+
+def test_indirect_attr_access_multiple_attrs():
+    """Should detect multiple different attrs from same indirect source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # db.py defines DB
+        (root / "db.py").write_text("DB = 'database'\n")
+
+        # models/__init__.py re-exports both
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text(
+            "from logger import LOGGER\n" "from db import DB\n",
+        )
+
+        # app.py uses both
+        (root / "app.py").write_text(
+            "import models\n"
+            "models.LOGGER.info('hello')\n"
+            "models.DB.connect()\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect both indirect attribute accesses
+        assert len(result.indirect_attr_accesses) == 2
+        attr_names = {acc.attr_name for acc in result.indirect_attr_accesses}
+        assert attr_names == {"LOGGER", "DB"}
+
+
+def test_indirect_attr_access_same_package_not_flagged():
+    """Same-package re-exports should not be flagged by default."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # pkg/__init__.py re-exports Foo from pkg/foo.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("from pkg.foo import Foo\n")
+        (pkg / "foo.py").write_text("Foo = 'foo class'\n")
+
+        # app.py uses import pkg + pkg.Foo
+        (root / "app.py").write_text(
+            "import pkg\n" "print(pkg.Foo)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should NOT detect this (same-package re-export)
+        assert len(result.indirect_attr_accesses) == 0
+
+
+def test_indirect_attr_access_same_package_with_strict():
+    """Same-package re-exports should be flagged with strict mode."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # pkg/__init__.py re-exports Foo from pkg/foo.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("from pkg.foo import Foo\n")
+        (pkg / "foo.py").write_text("Foo = 'foo class'\n")
+
+        # app.py uses import pkg + pkg.Foo
+        (root / "app.py").write_text(
+            "import pkg\n" "print(pkg.Foo)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(
+            graph,
+            entry_point=root / "app.py",
+            include_same_package_indirect=True,
+        )
+
+        # Should detect this in strict mode
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.is_same_package is True
+
+
+def test_indirect_attr_access_mixed_direct_and_indirect():
+    """Should only flag indirect attrs, not direct ones defined in the module."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # models/__init__.py defines Client and re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text(
+            "from logger import LOGGER\n" "Client = 'client class'\n",
+        )
+
+        # app.py uses both models.Client (direct) and models.LOGGER (indirect)
+        (root / "app.py").write_text(
+            "import models\n"
+            "models.LOGGER.info('hello')\n"
+            "print(models.Client)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should only flag LOGGER, not Client
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_name == "LOGGER"
+
+
+def test_indirect_attr_access_with_aliased_import():
+    """Should handle aliased module imports like 'import models as m'."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses import models as m + m.LOGGER
+        (root / "app.py").write_text(
+            "import models as m\n" "m.LOGGER.info('hello')\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect indirect attr access with aliased import
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.import_name == "m"  # The alias, not 'models'
+        assert acc.attr_name == "LOGGER"
+
+
+def test_fix_indirect_attr_access_basic():
+    """Should rewrite indirect attr access to use direct source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses import models + models.LOGGER
+        (root / "app.py").write_text(
+            "import models\n" "models.LOGGER.info('hello')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should now use import logger + logger.LOGGER
+        app_content = (root / "app.py").read_text()
+        assert "import logger" in app_content
+        assert "logger.LOGGER" in app_content
+        # models.LOGGER should be replaced
+        assert "models.LOGGER" not in app_content
+
+
+def test_fix_indirect_attr_access_multiple_usages():
+    """Should rewrite all usages of indirect attr access."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses models.LOGGER multiple times
+        (root / "app.py").write_text(
+            "import models\n"
+            "models.LOGGER.info('hello')\n"
+            "models.LOGGER.debug('debug')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # All usages should be rewritten
+        app_content = (root / "app.py").read_text()
+        assert "import logger" in app_content
+        assert app_content.count("logger.LOGGER") == 2
+        assert "models.LOGGER" not in app_content
+
+
+def test_fix_indirect_attr_access_with_aliased_import():
+    """Should handle aliased imports when fixing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses import models as m + m.LOGGER
+        (root / "app.py").write_text(
+            "import models as m\n" "m.LOGGER.info('hello')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # Should rewrite to use logger.LOGGER
+        app_content = (root / "app.py").read_text()
+        assert "import logger" in app_content
+        assert "logger.LOGGER" in app_content
+        assert "m.LOGGER" not in app_content
+
+
+def test_fix_indirect_attr_access_with_alias_in_chain():
+    """Should handle aliases in the re-export chain."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # models/__init__.py re-exports CONFIG as CONF
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from core import CONFIG as CONF\n")
+
+        # app.py uses import models + models.CONF
+        (root / "app.py").write_text(
+            "import models\n" "print(models.CONF)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect with original name
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_name == "CONF"  # As used
+        assert acc.original_name == "CONFIG"  # Original in core.py
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # Should rewrite to use core.CONFIG (original name)
+        app_content = (root / "app.py").read_text()
+        assert "import core" in app_content
+        assert "core.CONFIG" in app_content
+        assert "models.CONF" not in app_content
+
+
+def test_direct_attr_access_not_flagged():
+    """Direct attr access (defined in the module) should not be flagged."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # models/__init__.py defines Client directly
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("Client = 'client class'\n")
+
+        # app.py uses import models + models.Client
+        (root / "app.py").write_text(
+            "import models\n" "print(models.Client)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should NOT detect any indirect attr access
+        assert len(result.indirect_attr_accesses) == 0
+
+
+# =============================================================================
+# Nested module attribute access tests
+# =============================================================================
+
+
+def test_indirect_attr_access_nested_submodule():
+    """Should detect nested access like pkg.mod.LOGGER."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # pkg/__init__.py is empty
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal/__init__.py re-exports LOGGER from logger.py
+        internal = pkg / "internal"
+        internal.mkdir()
+        (internal / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses pkg.internal.LOGGER
+        (root / "app.py").write_text(
+            "import pkg\n" "pkg.internal.LOGGER.info('hello')\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect the nested indirect attribute access
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.file == root / "app.py"
+        assert acc.import_name == "pkg"
+        assert acc.attr_path == ["internal", "LOGGER"]
+        assert acc.attr_name == "LOGGER"
+        assert acc.original_source == root / "logger.py"
+
+
+def test_indirect_attr_access_deep_nesting():
+    """Should handle deeply nested access like pkg.sub.mod.LOGGER."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/sub/__init__.py
+        sub = pkg / "sub"
+        sub.mkdir()
+        (sub / "__init__.py").write_text("")
+
+        # pkg/sub/mod/__init__.py re-exports LOGGER
+        mod = sub / "mod"
+        mod.mkdir()
+        (mod / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses pkg.sub.mod.LOGGER
+        (root / "app.py").write_text(
+            "import pkg\n" "pkg.sub.mod.LOGGER.info('hello')\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect the deeply nested indirect access
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_path == ["sub", "mod", "LOGGER"]
+        assert acc.original_source == root / "logger.py"
+
+
+def test_fix_indirect_attr_access_nested():
+    """Should rewrite nested access to use direct source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal/__init__.py re-exports LOGGER
+        internal = pkg / "internal"
+        internal.mkdir()
+        (internal / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses pkg.internal.LOGGER
+        (root / "app.py").write_text(
+            "import pkg\n" "pkg.internal.LOGGER.info('hello')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should now use logger.LOGGER
+        app_content = (root / "app.py").read_text()
+        assert "import logger" in app_content
+        assert "logger.LOGGER" in app_content
+        assert "pkg.internal.LOGGER" not in app_content
+
+
+def test_fix_indirect_attr_access_deep_nesting():
+    """Should rewrite deeply nested access."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # pkg/sub/mod/__init__.py structure
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        sub = pkg / "sub"
+        sub.mkdir()
+        (sub / "__init__.py").write_text("")
+        mod = sub / "mod"
+        mod.mkdir()
+        (mod / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py
+        (root / "app.py").write_text(
+            "import pkg\n"
+            "pkg.sub.mod.LOGGER.info('hello')\n"
+            "pkg.sub.mod.LOGGER.debug('debug')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # Both usages should be rewritten
+        app_content = (root / "app.py").read_text()
+        assert "import logger" in app_content
+        assert app_content.count("logger.LOGGER") == 2
+        assert "pkg.sub.mod.LOGGER" not in app_content
+
+
+def test_indirect_attr_access_nested_with_alias_in_chain():
+    """Should handle aliases in nested re-export chains."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal/__init__.py re-exports CONFIG as CONF
+        internal = pkg / "internal"
+        internal.mkdir()
+        (internal / "__init__.py").write_text("from core import CONFIG as CONF\n")
+
+        # app.py uses pkg.internal.CONF
+        (root / "app.py").write_text(
+            "import pkg\n" "print(pkg.internal.CONF)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect with original name
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_path == ["internal", "CONF"]
+        assert acc.attr_name == "CONF"
+        assert acc.original_name == "CONFIG"
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # Should rewrite to use core.CONFIG
+        app_content = (root / "app.py").read_text()
+        assert "import core" in app_content
+        assert "core.CONFIG" in app_content
+
+
+def test_indirect_attr_access_nested_mixed_direct_indirect():
+    """Nested access with some direct and some indirect attrs."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal/__init__.py defines Client and re-exports LOGGER
+        internal = pkg / "internal"
+        internal.mkdir()
+        (internal / "__init__.py").write_text(
+            "from logger import LOGGER\n" "Client = 'client class'\n",
+        )
+
+        # app.py uses both
+        (root / "app.py").write_text(
+            "import pkg\n"
+            "pkg.internal.LOGGER.info('hello')\n"
+            "print(pkg.internal.Client)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should only flag LOGGER (indirect), not Client (direct)
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_path == ["internal", "LOGGER"]
+
+
+def test_indirect_attr_access_nested_with_file_submodule():
+    """Nested access through .py file submodule (not __init__.py)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal.py (file, not directory) re-exports LOGGER
+        (pkg / "internal.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses pkg.internal.LOGGER
+        (root / "app.py").write_text(
+            "import pkg\n" "pkg.internal.LOGGER.info('hello')\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect through the .py submodule
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_path == ["internal", "LOGGER"]
+        assert acc.current_source == pkg / "internal.py"
+        assert acc.original_source == root / "logger.py"
+
+
+def test_fix_indirect_attr_access_with_function_local_import():
+    """Function-local import X + X.attr should have new import in same scope."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py has function-local import
+        (root / "app.py").write_text(
+            "def foo():\n"
+            "    import models\n"
+            "    models.LOGGER.info('hello')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify the fix
+        app_content = (root / "app.py").read_text()
+
+        # New import should be added inside the function (same scope as original)
+        assert "import logger" in app_content
+        # Usage should be rewritten
+        assert "logger.LOGGER" in app_content
+        # The import logger should be inside the function (indented)
+        lines = app_content.splitlines()
+        logger_import_line = next(line for line in lines if "import logger" in line)
+        assert logger_import_line.startswith("    ")  # indented inside function
+
+
+def test_fix_indirect_attr_with_file_containing_local_imports():
+    """Files with function-local imports should not have new imports inserted there."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py has both module-level import (models) and function-local import
+        (root / "app.py").write_text(
+            "import models\n"
+            "\n"
+            "def bar():\n"
+            "    from os import path  # function-local import\n"
+            "    return path.exists('test')\n"
+            "\n"
+            "def foo():\n"
+            "    models.LOGGER.info('hello')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify the fix
+        app_content = (root / "app.py").read_text()
+        lines = app_content.splitlines()
+
+        # New import should be at module level, not inside bar()
+        # Find where "import logger" is
+        import_logger_line = next(
+            (i for i, l in enumerate(lines) if l.strip() == "import logger"),
+            None,
+        )
+        assert import_logger_line is not None
+
+        # It should be near the top (before any function definitions)
+        def_bar_line = next(i for i, l in enumerate(lines) if "def bar" in l)
+        assert import_logger_line < def_bar_line
+
+
+def test_fix_indirect_imports_with_split_imports():
+    """When fixing from-imports that split lines, attr fixes should still work."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # extensions.py defines db
+        (root / "extensions.py").write_text("db = 'database'\n")
+
+        # models/__init__.py re-exports both
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text(
+            "from logger import LOGGER\n" "from extensions import db\n",
+        )
+
+        # app.py imports both on one line and uses both
+        (root / "app.py").write_text(
+            "from models import LOGGER, db\n"
+            "\n"
+            "import models\n"
+            "\n"
+            "def foo():\n"
+            "    models.LOGGER.info('hello')\n"
+            "    return db\n",
+        )
+
+        # Run fix - this tests that attr fixes work even when import fixes
+        # split lines (changing line numbers)
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify syntax is valid
+        app_content = (root / "app.py").read_text()
+        import ast
+
+        ast.parse(app_content)  # Should not raise
+
+        # Verify the attr access was fixed
+        assert "logger.LOGGER" in app_content
+
+
+def test_fix_indirect_attr_access_preserves_class_scope():
+    """import X + X.attr fixes inside class bodies should stay inside the class."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'my logger'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py has class-body import models + models.LOGGER usage
+        (root / "app.py").write_text(
+            "class MyClass:\n"
+            "    import models\n"
+            "    log = models.LOGGER\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify the fix
+        app_content = (root / "app.py").read_text()
+
+        # New import should be inside the class (same scope as original)
+        assert "import logger" in app_content
+        assert "logger.LOGGER" in app_content
+
+        # The new import should be indented (inside class)
+        lines = app_content.splitlines()
+        logger_import_line = next(line for line in lines if line.strip() == "import logger")
+        assert logger_import_line.startswith("    ")  # indented inside class
+
+
+def test_fix_indirect_attr_access_no_duplicate_imports():
+    """When multiple import statements access attrs from the same source, don't duplicate."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # extensions.py defines db
+        (root / "extensions.py").write_text("db = 'database'\n")
+
+        # models/__init__.py re-exports db
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from extensions import db\n")
+
+        # providers/__init__.py also re-exports db
+        providers = root / "providers"
+        providers.mkdir()
+        (providers / "__init__.py").write_text("from extensions import db\n")
+
+        # app.py imports both and uses both .db attrs
+        (root / "app.py").write_text(
+            "import models\n"
+            "import providers\n"
+            "\n"
+            "def foo():\n"
+            "    models.db.execute('query1')\n"
+            "    providers.db.execute('query2')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify the fix
+        app_content = (root / "app.py").read_text()
+
+        # Should have exactly ONE `import extensions`, not two
+        assert app_content.count("import extensions") == 1
+
+        # Both usages should be rewritten
+        assert "extensions.db" in app_content
+        assert "models.db" not in app_content or "import models" in app_content
+        assert "providers.db" not in app_content or "import providers" in app_content

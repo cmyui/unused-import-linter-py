@@ -265,6 +265,10 @@ Note: Imports listed in `__all__` are always considered "used" (public API decla
 
 ### Indirect import fix example
 
+The tool can fix two patterns of indirect imports:
+
+**Pattern 1: from-import style**
+
 ```python
 # core.py
 CONFIG = {...}  # Original definition
@@ -283,7 +287,30 @@ Running `import-analyzer --fix-indirect-imports app.py` rewrites the import to u
 from core import CONFIG  # Direct - importing from source
 ```
 
-This also handles aliases: if `app.py` uses `from utils import CONFIG as CONF`, it will be rewritten to `from core import CONFIG as CONF`.
+**Pattern 2: import + attribute access style**
+
+```python
+# logger.py
+LOGGER = Logger()  # Original definition
+
+# models/__init__.py
+from logger import LOGGER  # Re-exports LOGGER
+
+# app.py (before)
+import models
+models.LOGGER.info("hello")  # Indirect - accessing via re-exporter
+```
+
+Running `import-analyzer --fix-indirect-imports app.py`:
+
+```python
+# app.py (after)
+import models
+import logger
+logger.LOGGER.info("hello")  # Direct - accessing via source
+```
+
+This also works with nested access like `pkg.internal.LOGGER` and handles aliases throughout the re-export chain. Function-local and class-body imports are preserved in their original scope.
 
 ### noqa comments
 

@@ -53,6 +53,7 @@ import_analyzer/
 - `ImportEdge`: Edge in import graph (importer → imported, names)
 - `ImplicitReexport`: Re-exported import not in `__all__`
 - `IndirectImport`: Import through a re-exporter instead of original source (file, name, original_name, current_source, original_source, is_same_package)
+- `IndirectAttributeAccess`: Attribute access through a re-exporter (e.g., `import models` + `models.LOGGER` where LOGGER is re-exported)
 
 **`_ast_helpers.py`**: AST visitors and helpers:
 - `ImportExtractor`: Collects all imports with `level` for relative imports. Skips `__future__`.
@@ -66,6 +67,7 @@ import_analyzer/
 - `DefinitionCollector`: Collects all defined names (classes, functions, variables) in a module
 - `StringAnnotationVisitor`: Parses string literals as type annotations for forward references.
 - `collect_dunder_all_names`: Extracts names from `__all__` so exports aren't flagged.
+- `AttributeAccessCollector`: Collects `module.attr` usages for `import module` statements (used for indirect attr access detection)
 
 **`_detection.py`**: Contains `find_unused_imports()` for single-file analysis.
 - Respects `# noqa: F401` comments (matches flake8 behavior)
@@ -78,10 +80,15 @@ import_analyzer/
   - Inserts `pass` when removing imports would leave a block empty
   - Handles semicolon-separated statements with surgical removal
   - Handles backslash line continuations
-- `fix_indirect_imports()`: Rewrites indirect imports to use direct sources
+- `fix_indirect_imports()`: Rewrites `from X import Y` indirect imports to use direct sources
   - Groups indirect imports by target module for efficient rewriting
   - Preserves local aliases (e.g., `from utils import CONFIG as CONF` → `from core import CONFIG as CONF`)
-  - Merges with existing imports from the same source module
+  - Preserves scope (function-local and class-body imports stay in their scope)
+- `fix_indirect_attr_accesses()`: Rewrites `import X` + `X.attr` patterns to use direct sources
+  - Adds new import statements at the same location/indentation as original
+  - Rewrites all usage sites (`models.LOGGER` → `logger.LOGGER`)
+  - Handles nested access like `pkg.internal.LOGGER`
+  - Preserves scope (function-local and class-body imports stay in their scope)
 
 **`_resolution.py`**: Module resolution:
 - `ModuleResolver`: Resolves import statements to file paths
@@ -99,7 +106,7 @@ import_analyzer/
 
 **`_cross_file.py`**: Cross-file analysis:
 - `CrossFileAnalyzer`: Main analyzer class
-- `CrossFileResult`: Results (unused_imports, implicit_reexports, circular_imports, unreachable_files, indirect_imports)
+- `CrossFileResult`: Results (unused_imports, implicit_reexports, circular_imports, unreachable_files, indirect_imports, indirect_attr_accesses)
 - **`__all__` as usage**: Imports listed in `__all__` are always considered "used" (public API). This matches flake8/ruff/autoflake behavior. No cascade detection through `__all__`.
 - **Cascade detection**: Iterates until stable to find all unused imports in one pass
   - When import A is unused, check if B's import (re-exported to A) is now unused
@@ -107,8 +114,11 @@ import_analyzer/
   - Continues until no new unused imports are found
   - Exception: `__init__.py` files without `__all__` have implicit re-exports that can cascade
 - **Indirect import detection**: Finds imports that go through re-exporters instead of direct sources
+  - `_find_indirect_imports()`: Detects `from X import Y` where Y is re-exported
+  - `_find_indirect_attr_accesses()`: Detects `import X` + `X.attr` where attr is re-exported
   - `_trace_import_source()`: Traces an import back to its original definition, tracking aliases
   - `_is_same_package_reexport()`: Checks if re-exporter is `__init__.py` of source's package
+  - Handles nested access like `pkg.internal.LOGGER` by traversing submodules
   - By default, same-package re-exports are allowed (package public API pattern)
   - `--strict-indirect-imports` flag also flags same-package re-exports
 - **Unreachable file detection**: Two concepts tracked separately:

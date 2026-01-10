@@ -606,6 +606,103 @@ class NameUsageCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+@dataclass
+class AttributeUsage:
+    """A module.attr1.attr2... usage location."""
+
+    attr_path: list[str]  # Path of attributes (e.g., ["mod", "LOGGER"] for pkg.mod.LOGGER)
+    lineno: int  # Line number of the usage
+    col_offset: int  # Column offset of the start of the root module name
+
+
+class AttributeAccessCollector(ast.NodeVisitor):
+    """Collect module.attr usages for 'import module' statements.
+
+    Given source like:
+        import pkg
+        pkg.mod.LOGGER.info("hello")
+        pkg.Config.DEBUG
+
+    This collector produces:
+        {
+            "pkg": [
+                AttributeUsage(["mod", "LOGGER"], 2, 0),
+                AttributeUsage(["Config"], 3, 0),
+            ]
+        }
+
+    Handles:
+    - Aliased imports: 'import models as m' + 'm.LOGGER'
+    - Nested access: 'import pkg' + 'pkg.mod.LOGGER'
+    - Any depth of nesting
+    """
+
+    def __init__(self, module_imports: set[str]) -> None:
+        """Initialize the collector.
+
+        Args:
+            module_imports: Set of names bound by 'import X' or 'import X as Y'
+                           (the bound name, which is Y if aliased, X otherwise)
+        """
+        self.module_imports = module_imports
+        self.usages: dict[str, list[AttributeUsage]] = {}
+        for name in module_imports:
+            self.usages[name] = []
+        # Track which attribute chains we've already recorded (to avoid duplicates)
+        # Key: (root_name, lineno, col_offset, tuple(attr_path))
+        self._seen: set[tuple[str, int, int, tuple[str, ...]]] = set()
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        """Track attribute access chains on imported modules."""
+        # Only interested in Load context (reading, not assignment to attribute)
+        if not isinstance(node.ctx, ast.Load):
+            self.generic_visit(node)
+            return
+
+        # Walk up to find the root Name and collect the attribute path
+        attr_path: list[str] = []
+        current: ast.expr = node
+
+        while isinstance(current, ast.Attribute):
+            attr_path.append(current.attr)
+            current = current.value
+
+        # Check if the root is a Name node
+        if not isinstance(current, ast.Name):
+            self.generic_visit(node)
+            return
+
+        root_name = current.id
+
+        # Check if this name refers to an imported module
+        if root_name not in self.module_imports:
+            self.generic_visit(node)
+            return
+
+        # Reverse to get path from root to leaf
+        attr_path.reverse()
+
+        # Check if we've already recorded this exact chain
+        # (nested visits can produce duplicates e.g., pkg.mod.LOGGER visits both
+        # the full chain and the pkg.mod part)
+        key = (root_name, current.lineno, current.col_offset, tuple(attr_path))
+        if key in self._seen:
+            self.generic_visit(node)
+            return
+        self._seen.add(key)
+
+        # Record this usage
+        self.usages[root_name].append(
+            AttributeUsage(
+                attr_path=attr_path,
+                lineno=current.lineno,
+                col_offset=current.col_offset,
+            ),
+        )
+
+        self.generic_visit(node)
+
+
 class StringAnnotationVisitor(ast.NodeVisitor):
     """Extract names from string annotations (forward references).
 
