@@ -1143,10 +1143,7 @@ def test_fix_indirect_imports():
         )
 
         # Run with --fix-indirect-imports
-        count, messages = check_cross_file(
-            root / "app.py",
-            fix_indirect=True,
-        )
+        check_cross_file(root / "app.py", fix_indirect=True)
 
         # app.py should now import directly from core
         app_content = (root / "app.py").read_text()
@@ -1178,10 +1175,7 @@ def test_fix_indirect_imports_preserves_direct():
         )
 
         # Run with --fix-indirect-imports
-        count, messages = check_cross_file(
-            root / "app.py",
-            fix_indirect=True,
-        )
+        check_cross_file(root / "app.py", fix_indirect=True)
 
         # app.py should now have separate imports
         app_content = (root / "app.py").read_text()
@@ -1249,7 +1243,7 @@ def test_fix_indirect_imports_with_strict_mode():
         )
 
         # Without strict mode, this should NOT be fixed
-        count, messages = check_cross_file(
+        check_cross_file(
             root / "main.py",
             fix_indirect=True,
             strict_indirect_imports=False,
@@ -1260,7 +1254,7 @@ def test_fix_indirect_imports_with_strict_mode():
         assert "from pkg import Foo" in main_content
 
         # Now with strict mode, it SHOULD be fixed
-        count, messages = check_cross_file(
+        check_cross_file(
             root / "main.py",
             fix_indirect=True,
             strict_indirect_imports=True,
@@ -1270,3 +1264,122 @@ def test_fix_indirect_imports_with_strict_mode():
         main_content = (root / "main.py").read_text()
         assert "from pkg.foo import Foo" in main_content
         assert "from pkg import Foo" not in main_content
+
+
+# =============================================================================
+# Aliased import chain tests
+# =============================================================================
+
+
+def test_indirect_import_with_alias_in_reexporter():
+    """Detect indirect imports where the re-exporter uses an alias."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # utils/__init__.py re-exports CONFIG as CONF
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from core import CONFIG as CONF\n")
+
+        # app.py imports CONF from utils (indirect)
+        (root / "app.py").write_text(
+            "from utils import CONF\n" "print(CONF)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect the indirect import
+        assert len(result.indirect_imports) == 1
+        ind = result.indirect_imports[0]
+        assert ind.file == root / "app.py"
+        assert ind.name == "CONF"  # Local name
+        assert ind.original_name == "CONFIG"  # Original name in core.py
+        assert ind.original_source == root / "core.py"
+
+
+def test_fix_indirect_import_with_alias_preserves_local_name():
+    """Fix should preserve local name when original source uses different name."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # utils/__init__.py re-exports CONFIG as CONF
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from core import CONFIG as CONF\n")
+
+        # app.py imports CONF from utils
+        (root / "app.py").write_text(
+            "from utils import CONF\n" "print(CONF)\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should now import from core with alias
+        app_content = (root / "app.py").read_text()
+        assert "from core import CONFIG as CONF" in app_content
+        assert "from utils import CONF" not in app_content
+
+
+def test_fix_indirect_import_multi_hop_alias():
+    """Fix should handle aliases through multiple hops."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # base.py defines SETTING
+        (root / "base.py").write_text("SETTING = 'value'\n")
+
+        # middle.py re-exports SETTING as CFG
+        (root / "middle.py").write_text("from base import SETTING as CFG\n")
+
+        # utils/__init__.py re-exports CFG as CONF
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from middle import CFG as CONF\n")
+
+        # app.py imports CONF from utils
+        (root / "app.py").write_text(
+            "from utils import CONF\n" "print(CONF)\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should now import from base with alias preserving local name
+        app_content = (root / "app.py").read_text()
+        assert "from base import SETTING as CONF" in app_content
+        assert "from utils import CONF" not in app_content
+
+
+def test_indirect_import_no_alias_needed():
+    """When original name matches local name, no alias should be added."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # utils/__init__.py re-exports CONFIG (no alias)
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from core import CONFIG\n")
+
+        # app.py imports CONFIG from utils
+        (root / "app.py").write_text(
+            "from utils import CONFIG\n" "print(CONFIG)\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should import without alias (names match)
+        app_content = (root / "app.py").read_text()
+        assert "from core import CONFIG" in app_content
+        assert "as CONFIG" not in app_content  # No alias needed

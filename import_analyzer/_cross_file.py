@@ -445,10 +445,13 @@ class CrossFileAnalyzer:
                 if name in imported_module.defined_names:
                     continue  # Defined here, not indirect
 
-                # Find where this module got the name from
-                original_source = self._trace_import_source(edge.imported, name)
-                if original_source is None or original_source == edge.imported:
-                    continue  # Can't trace or already at source
+                # Find where this module got the name from (and original name)
+                trace_result = self._trace_import_source(edge.imported, name)
+                if trace_result is None:
+                    continue  # Can't trace
+                original_source, original_name = trace_result
+                if original_source == edge.imported:
+                    continue  # Already at source
 
                 # Check if same-package re-export
                 is_same_pkg = self._is_same_package_reexport(
@@ -466,6 +469,7 @@ class CrossFileAnalyzer:
                     IndirectImport(
                         file=edge.importer,
                         name=name,
+                        original_name=original_name,
                         lineno=lineno,
                         current_source=edge.imported,
                         original_source=original_source,
@@ -477,14 +481,24 @@ class CrossFileAnalyzer:
         results.sort(key=lambda x: (x.file, x.lineno, x.name))
         return results
 
-    def _trace_import_source(self, file: Path, name: str) -> Path | None:
+    def _trace_import_source(
+        self,
+        file: Path,
+        name: str,
+    ) -> tuple[Path, str] | None:
         """Trace an import back to its original definition.
 
         Follows the import chain until we find a file that actually defines
-        the name (not just re-exports it).
+        the name (not just re-exports it). Handles aliases along the way.
+
+        Returns:
+            Tuple of (source_file, original_name) where original_name is the
+            name as defined in source_file (may differ from input name if
+            aliases were used in the chain). Returns None if can't trace.
         """
         visited: set[Path] = set()
         current = file
+        current_name = name
 
         while current not in visited:
             visited.add(current)
@@ -493,17 +507,20 @@ class CrossFileAnalyzer:
                 return None
 
             # If defined here, this is the source
-            if name in module.defined_names:
-                return current
+            if current_name in module.defined_names:
+                return (current, current_name)
 
             # Find where this module imports the name from
             found_next = False
             for imp in module.imports:
-                if imp.name == name:
+                if imp.name == current_name:
+                    # Follow the original_name if aliased
+                    next_name = imp.original_name
                     # Find the edge for this import
                     for edge in self.graph.get_imports(current):
-                        if name in edge.names and edge.imported:
+                        if current_name in edge.names and edge.imported:
                             current = edge.imported
+                            current_name = next_name
                             found_next = True
                             break
                     break

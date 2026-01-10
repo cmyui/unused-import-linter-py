@@ -60,7 +60,7 @@ class ImplicitReexport:
 class IndirectImport:
     """An import that goes through a re-exporter instead of the source.
 
-    Example:
+    Example (without alias):
         # core.py
         CONFIG = {}  # Original definition
 
@@ -72,10 +72,24 @@ class IndirectImport:
 
         # app.py (DIRECT - what it should be)
         from core import CONFIG  # Importing from source
+
+    Example (with alias):
+        # core.py
+        CONFIG = {}  # Original definition
+
+        # utils/__init__.py
+        from core import CONFIG as CONF  # Re-exports with alias
+
+        # app.py (INDIRECT)
+        from utils import CONF
+
+        # app.py (DIRECT - preserves the alias)
+        from core import CONFIG as CONF
     """
 
     file: Path  # File with the indirect import
-    name: str  # Name being imported indirectly
+    name: str  # Name as used in the importing file (e.g., "CONF")
+    original_name: str  # Name as defined in original_source (e.g., "CONFIG")
     lineno: int  # Line number of the import
     current_source: Path  # Where it's imported from (re-exporter)
     original_source: Path  # Where it's actually defined

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 from import_analyzer._data import ImportInfo
@@ -444,6 +445,15 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
     return "".join(cleaned_lines)
 
 
+@dataclass
+class _IndirectInfo:
+    """Info about an indirect import for fixing."""
+
+    module: str  # Target module name
+    original_name: str  # Name in the original source
+    local_name: str  # Name as used locally (may differ due to aliases)
+
+
 def fix_indirect_imports(
     source: str,
     indirect_imports: list[IndirectImport],
@@ -458,16 +468,31 @@ def fix_indirect_imports(
 
     Returns:
         Modified source code with indirect imports replaced
+
+    Example:
+        If we have:
+            # logger.py: LOGGER = ...
+            # models/__init__.py: from logger import LOGGER as LOG
+            # app.py: from models import LOG
+
+        The fix will produce:
+            # app.py: from logger import LOGGER as LOG
+
+        This preserves the local name (LOG) while importing from the source.
     """
     if not indirect_imports:
         return source
 
-    # Build lookup: (lineno, name) -> original_source module name
-    indirect_by_line: dict[int, dict[str, str]] = defaultdict(dict)
+    # Build lookup: (lineno, local_name) -> _IndirectInfo
+    indirect_by_line: dict[int, dict[str, _IndirectInfo]] = defaultdict(dict)
     for ind in indirect_imports:
         module_name = module_names.get(ind.original_source)
         if module_name:
-            indirect_by_line[ind.lineno][ind.name] = module_name
+            indirect_by_line[ind.lineno][ind.name] = _IndirectInfo(
+                module=module_name,
+                original_name=ind.original_name,
+                local_name=ind.name,
+            )
 
     if not indirect_by_line:
         return source
@@ -486,21 +511,21 @@ def fix_indirect_imports(
         if line_idx not in indirect_by_line:
             continue
 
-        indirect_names = indirect_by_line[line_idx]
+        indirect_lookup = indirect_by_line[line_idx]
 
         # Get all aliases in this import
         aliases = [(alias.name, alias.asname) for alias in node.names]
 
         # Separate into indirect and direct imports
         # Group indirect imports by their target module
-        indirect_by_module: dict[str, list[tuple[str, str | None]]] = defaultdict(list)
+        indirect_by_module: dict[str, list[_IndirectInfo]] = defaultdict(list)
         direct_imports: list[tuple[str, str | None]] = []
 
         for name, asname in aliases:
             local_name = asname or name
-            if local_name in indirect_names:
-                target_module = indirect_names[local_name]
-                indirect_by_module[target_module].append((name, asname))
+            if local_name in indirect_lookup:
+                info = indirect_lookup[local_name]
+                indirect_by_module[info.module].append(info)
             else:
                 direct_imports.append((name, asname))
 
@@ -530,13 +555,14 @@ def fix_indirect_imports(
             )
 
         # Add new imports from original sources
-        for module, names in sorted(indirect_by_module.items()):
+        for module, infos in sorted(indirect_by_module.items()):
             parts = []
-            for name, asname in names:
-                if asname:
-                    parts.append(f"{name} as {asname}")
+            for info in infos:
+                if info.original_name != info.local_name:
+                    # Need alias: from X import ORIGINAL as LOCAL
+                    parts.append(f"{info.original_name} as {info.local_name}")
                 else:
-                    parts.append(name)
+                    parts.append(info.original_name)
             new_imports.append(f"{indent_str}from {module} import {', '.join(parts)}")
 
         new_code = "\n".join(new_imports)

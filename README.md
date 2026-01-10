@@ -2,7 +2,8 @@
 
 [![build status](https://github.com/cmyui/import-analyzer-py/actions/workflows/ci.yml/badge.svg)](https://github.com/cmyui/import-analyzer-py/actions/workflows/ci.yml)
 
-> **Warning**: This project is in early development and will undergo significant changes. The API is not stable and may change without notice.
+> [!WARNING]
+> This project is in early development and will undergo significant changes. The API is not stable and may change without notice.
 
 A Python import analyzer with cross-file analysis, unused import detection, circular import warnings, and autofix.
 
