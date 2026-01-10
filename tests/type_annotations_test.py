@@ -236,3 +236,20 @@ def test_quoted_types_in_generics_noop(s):
     """Test that quoted types inside generics are properly detected."""
     unused = _get_unused_names(s)
     assert 'Path' not in unused
+
+
+@pytest.mark.parametrize(
+    's',
+    (
+        # String annotation with attribute access
+        pytest.param(
+            'import typing\n'
+            '\n'
+            'x: "typing.Optional[int]" = None\n',
+            id='string annotation with attribute access',
+        ),
+    ),
+)
+def test_string_annotation_attribute_access_noop(s):
+    """Test string annotations with attribute access use imports."""
+    assert _get_unused_names(s) == set()

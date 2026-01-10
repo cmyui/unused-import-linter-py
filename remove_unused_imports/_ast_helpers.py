@@ -173,18 +173,14 @@ class ScopeAwareNameCollector(ast.NodeVisitor):
 
     def visit_Name(self, node: ast.Name) -> None:
         """Track name usages, resolving to scope."""
+        # Only Load context counts as usage
+        # Store context is handled by visit_Assign, visit_For, etc.
         if isinstance(node.ctx, ast.Load):
             # Check if this name resolves to module scope
             if self._scope_stack.resolves_to_module_scope(node.id):
                 # Don't count as import usage if shadowed at module level
                 if node.id not in self._module_level_shadows:
                     self.module_scope_usages.add(node.id)
-        elif isinstance(node.ctx, ast.Store):
-            self._scope_stack.add_binding(node.id)
-            # Track module-level shadows
-            if self._scope_stack.current().scope_type == ScopeType.MODULE:
-                self._module_level_shadows.add(node.id)
-        # Del context: don't add binding, don't count as usage
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         """Track attribute access root names."""
@@ -447,9 +443,6 @@ class ScopeAwareNameCollector(ast.NodeVisitor):
         The first iterator is evaluated in the enclosing scope, but all other
         parts (targets, filters, subsequent iterators) are in comprehension scope.
         """
-        if not generators:
-            return
-
         # First iterator is evaluated in enclosing scope
         self.visit(generators[0].iter)
 

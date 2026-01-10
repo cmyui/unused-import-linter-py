@@ -450,6 +450,27 @@ def test_autofix_pass_insertion_edge_cases(s, expected):
     assert result == expected
 
 
+def test_autofix_pass_insertion_multiline():
+    """Test pass insertion when removing a multiline import from empty block."""
+    s = (
+        'try:\n'
+        '    from os import (\n'
+        '        path\n'
+        '    )\n'
+        'except Exception:\n'
+        '    pass\n'
+    )
+    expected = (
+        'try:\n'
+        '    pass\n'
+        'except Exception:\n'
+        '    pass\n'
+    )
+    unused = find_unused_imports(s)
+    result = remove_unused_imports(s, unused)
+    assert result == expected
+
+
 # =============================================================================
 # Partial removal from regular import statements
 # =============================================================================

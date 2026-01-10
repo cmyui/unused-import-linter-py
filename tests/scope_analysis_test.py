@@ -597,3 +597,103 @@ def test_except_handler_usage_noop(s):
 def test_class_keywords_noop(s):
     """Test class keyword arguments use imports."""
     assert _get_unused_names(s) == set()
+
+
+# =============================================================================
+# Module-level assignment shadowing
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ('s', 'expected'),
+    (
+        pytest.param(
+            'import x\n'
+            'x = 1\n',
+            {'x'},
+            id='module level assignment shadows import',
+        ),
+        pytest.param(
+            'from typing import List\n'
+            'List = str\n',
+            {'List'},
+            id='module level assignment shadows from-import',
+        ),
+    ),
+)
+def test_module_level_shadowing(s, expected):
+    """Test module-level assignments shadow imports."""
+    assert _get_unused_names(s) == expected
+
+
+# =============================================================================
+# Class decorators
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    's',
+    (
+        pytest.param(
+            'from dataclasses import dataclass\n'
+            '\n'
+            '@dataclass\n'
+            'class MyClass:\n'
+            '    x: int\n',
+            id='class decorator uses import',
+        ),
+    ),
+)
+def test_class_decorator_noop(s):
+    """Test class decorators use imports."""
+    assert _get_unused_names(s) == set()
+
+
+# =============================================================================
+# Augmented assignment
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    's',
+    (
+        pytest.param(
+            'import counter\n'
+            'counter += 1\n',
+            id='augmented assign uses import',
+        ),
+        pytest.param(
+            'import obj\n'
+            'obj.attr += 1\n',
+            id='augmented assign on attribute uses import',
+        ),
+        pytest.param(
+            'import obj\n'
+            'obj.attr: int = 1\n',
+            id='annotated assign on attribute uses import',
+        ),
+    ),
+)
+def test_assignment_variants_noop(s):
+    """Test various assignment forms use imports."""
+    assert _get_unused_names(s) == set()
+
+
+# =============================================================================
+# Comprehension with multiple generators and if clauses
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    's',
+    (
+        pytest.param(
+            'import math\n'
+            'result = [x for x in range(10) for y in range(10) if math.sqrt(y) > 1]\n',
+            id='nested generator if clause uses import',
+        ),
+    ),
+)
+def test_comprehension_nested_if_noop(s):
+    """Test nested comprehension if clauses use imports."""
+    assert _get_unused_names(s) == set()
