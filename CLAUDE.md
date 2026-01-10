@@ -71,7 +71,7 @@ import_analyzer/
 - noqa keyword is case-insensitive, but codes are case-sensitive
 - Handles noqa on multi-line imports (per-alias line) and backslash continuations
 
-**`_autofix.py`**: Contains `import_analyzer()` which:
+**`_autofix.py`**: Contains `remove_unused_imports()` which:
 - Partial removal from multi-import statements
 - Inserts `pass` when removing imports would leave a block empty
 - Handles semicolon-separated statements with surgical removal

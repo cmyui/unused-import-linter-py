@@ -72,6 +72,22 @@ cd import-analyzer-py
 pip install .
 ```
 
+## pre-commit
+
+Add to your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/cmyui/import-analyzer-py
+    rev: v0.1.2  # or latest version
+    hooks:
+      # Cross-file analysis (recommended) - analyzes entire project
+      - id: import-analyzer
+
+      # Or for faster single-file analysis on changed files only:
+      # - id: import-analyzer-single-file
+```
+
 ## Usage
 
 ### Cross-file mode (default)
