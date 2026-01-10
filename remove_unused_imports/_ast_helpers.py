@@ -521,12 +521,15 @@ class ImportExtractor(ast.NodeVisitor):
                 # Only the top-level name is bound
                 name = alias.name.split(".")[0]
 
+            # Use alias's lineno for multi-line imports (Python 3.10+)
+            # This ensures noqa comments on specific lines are respected
+            alias_lineno = getattr(alias, "lineno", node.lineno)
             self.imports.append(
                 ImportInfo(
                     name=name,
                     module="",
                     original_name=alias.name,
-                    lineno=node.lineno,
+                    lineno=alias_lineno,
                     col_offset=node.col_offset,
                     end_lineno=node.end_lineno or node.lineno,
                     end_col_offset=node.end_col_offset or 0,
@@ -551,12 +554,15 @@ class ImportExtractor(ast.NodeVisitor):
                 continue
 
             name = alias.asname if alias.asname else alias.name
+            # Use alias's lineno for multi-line imports (Python 3.10+)
+            # This ensures noqa comments on specific lines are respected
+            alias_lineno = getattr(alias, "lineno", node.lineno)
             self.imports.append(
                 ImportInfo(
                     name=name,
                     module=module,
                     original_name=alias.name,
-                    lineno=node.lineno,
+                    lineno=alias_lineno,
                     col_offset=node.col_offset,
                     end_lineno=node.end_lineno or node.lineno,
                     end_col_offset=node.end_col_offset or 0,

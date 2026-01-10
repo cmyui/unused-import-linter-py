@@ -218,3 +218,208 @@ def test_type_checking_used_in_string_annotation_noop(s):
     """Test that TYPE_CHECKING imports used in string annotations are NOT flagged."""
     unused = _get_unused_names(s)
     assert 'Path' not in unused
+
+
+# =============================================================================
+# noqa comments
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    's',
+    (
+        # Standard noqa: F401
+        pytest.param(
+            'import os  # noqa: F401\n',
+            id='noqa F401 standard format',
+        ),
+        # Bare noqa (no code)
+        pytest.param(
+            'import sys  # noqa\n',
+            id='noqa bare',
+        ),
+        # Multiple codes including F401
+        pytest.param(
+            'import re  # noqa: E501, F401\n',
+            id='noqa multiple codes with F401',
+        ),
+        # No space after #
+        pytest.param(
+            'from typing import List  #noqa: F401\n',
+            id='noqa no space after hash',
+        ),
+        # Extra spaces
+        pytest.param(
+            'from typing import Dict  #  noqa:  F401\n',
+            id='noqa extra spaces',
+        ),
+        # noqa keyword is case-insensitive
+        pytest.param(
+            'from collections import Counter  # NOQA: F401\n',
+            id='noqa keyword uppercase',
+        ),
+        pytest.param(
+            'from collections import OrderedDict  # NoQa: F401\n',
+            id='noqa keyword mixed case',
+        ),
+        # Comma variations
+        pytest.param(
+            'from abc import ABC  # noqa: F401,E501\n',
+            id='noqa comma no space',
+        ),
+        pytest.param(
+            'from abc import ABCMeta  # noqa: F401 , E501\n',
+            id='noqa comma with spaces',
+        ),
+        # noqa with trailing comment text
+        pytest.param(
+            'import os  # noqa: F401  imported for side effects\n',
+            id='noqa with trailing comment text',
+        ),
+    ),
+)
+def test_noqa_f401_noop(s):
+    """Test that imports with noqa: F401 are NOT flagged."""
+    assert _get_unused_names(s) == set()
+
+
+@pytest.mark.parametrize(
+    ('s', 'expected'),
+    (
+        # noqa with wrong code
+        pytest.param(
+            'import json  # noqa: E501\n',
+            {'json'},
+            id='noqa wrong code',
+        ),
+        # noqa with lowercase code (codes are case-sensitive, matching flake8)
+        pytest.param(
+            'import pickle  # noqa: f401\n',
+            {'pickle'},
+            id='noqa lowercase code not recognized',
+        ),
+        # noqa on different line (doesn't apply)
+        pytest.param(
+            'import math\n'
+            '# noqa: F401\n',
+            {'math'},
+            id='noqa on different line',
+        ),
+        # Mix of noqa and non-noqa
+        pytest.param(
+            'import os  # noqa: F401\n'
+            'import sys\n',
+            {'sys'},
+            id='noqa mixed with non-noqa',
+        ),
+    ),
+)
+def test_noqa_f401_still_flagged(s, expected):
+    """Test that noqa with wrong code or on wrong line still flags the import."""
+    assert _get_unused_names(s) == expected
+
+
+@pytest.mark.parametrize(
+    ('s', 'expected'),
+    (
+        # Multi-line import with noqa on individual names
+        pytest.param(
+            'from typing import (\n'
+            '    List,  # noqa: F401\n'
+            '    Dict,  # truly unused, no noqa\n'
+            '    Set,  # noqa: F401\n'
+            ')\n',
+            {'Dict'},
+            id='multiline import noqa on individual names',
+        ),
+        # Multi-line import with all noqa
+        pytest.param(
+            'from typing import (\n'
+            '    List,  # noqa: F401\n'
+            '    Dict,  # noqa: F401\n'
+            ')\n',
+            set(),
+            id='multiline import all have noqa',
+        ),
+        # Backslash continuation with noqa on following line
+        pytest.param(
+            'import os \\\n'
+            '# noqa: F401\n',
+            set(),
+            id='backslash continuation noqa on next line',
+        ),
+        # Backslash continuation with noqa on same line
+        pytest.param(
+            'import sys \\\n'
+            '  # noqa: F401\n',
+            set(),
+            id='backslash continuation noqa with leading space',
+        ),
+        # Multiple continuation lines
+        pytest.param(
+            'import \\\n'
+            '  os \\\n'
+            '  # noqa: F401\n',
+            set(),
+            id='multiple continuation lines with noqa',
+        ),
+    ),
+)
+def test_noqa_multiline_imports(s, expected):
+    """Test that noqa works on individual lines of multi-line imports."""
+    assert _get_unused_names(s) == expected
+
+
+# =============================================================================
+# Semicolon-separated imports with noqa
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    's',
+    (
+        # Semicolon imports with noqa at end
+        pytest.param(
+            'import sys; import os  # noqa: F401\n',
+            id='semicolon imports with noqa suppresses all',
+        ),
+        # Semicolon with from-import
+        pytest.param(
+            'import sys; from pathlib import Path  # noqa: F401\n',
+            id='semicolon with from-import noqa',
+        ),
+        # Semicolon with bare noqa
+        pytest.param(
+            'import sys; import os  # noqa\n',
+            id='semicolon imports with bare noqa',
+        ),
+    ),
+)
+def test_noqa_semicolon_imports_noop(s):
+    """Test that noqa at end of line suppresses all semicolon-separated imports."""
+    assert _get_unused_names(s) == set()
+
+
+@pytest.mark.parametrize(
+    ('s', 'expected'),
+    (
+        # Semicolon imports where one is used
+        pytest.param(
+            'import sys; import os  # noqa: F401\n'
+            'sys.argv\n',
+            set(),
+            id='semicolon imports one used one noqa',
+        ),
+        # Semicolon with continuation and noqa
+        pytest.param(
+            'import sys; import os \\\n'
+            '  # noqa: F401\n'
+            'sys.argv\n',
+            set(),
+            id='semicolon with continuation noqa',
+        ),
+    ),
+)
+def test_noqa_semicolon_with_usage(s, expected):
+    """Test semicolon imports with mixed usage and noqa."""
+    assert _get_unused_names(s) == expected
