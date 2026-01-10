@@ -10,8 +10,14 @@ from remove_unused_imports._ast_helpers import collect_string_annotation_names
 from remove_unused_imports._data import ImportInfo
 
 
-def find_unused_imports(source: str) -> list[ImportInfo]:
-    """Find all unused imports in the given source code."""
+def find_unused_imports(source: str, ignore_all: bool = False) -> list[ImportInfo]:
+    """Find all unused imports in the given source code.
+
+    Args:
+        source: Python source code to analyze
+        ignore_all: If True, don't consider __all__ as usage. Used by cross-file
+            analysis to identify imports that exist solely for re-export.
+    """
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
@@ -30,7 +36,11 @@ def find_unused_imports(source: str) -> list[ImportInfo]:
     string_names = collect_string_annotation_names(tree)
 
     # Also check __all__ exports (names in __all__ are considered used)
-    dunder_all_names = collect_dunder_all_names(tree)
+    # Unless ignore_all is True (for cross-file analysis)
+    if ignore_all:
+        dunder_all_names: set[str] = set()
+    else:
+        dunder_all_names = collect_dunder_all_names(tree)
 
     all_used_names = (
         usage_collector.module_scope_usages | string_names | dunder_all_names

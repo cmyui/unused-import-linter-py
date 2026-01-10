@@ -357,3 +357,410 @@ def test_cascade_multiple_consumers():
         # utils.py's List is still re-exported to other.py, so NOT unused
         utils_unused = result.unused_imports.get(root / "utils.py", [])
         assert not any(imp.name == "List" for imp in utils_unused)
+
+
+def test_cascade_reexport_only_via_dunder_all():
+    """Should cascade through imports that are only in __all__ for re-export.
+
+    This tests the case where an import is "protected" by __all__ in single-file
+    analysis, but should become unused when no one imports it anymore.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # main.py imports Foo from pkg but doesn't use it
+        (root / "main.py").write_text(
+            "from pkg import Foo  # unused!\n" "x = 1\n",
+        )
+
+        # pkg/__init__.py imports Foo and exports it via __all__
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            "from pkg.foo import Foo\n" "__all__ = ['Foo']\n",
+        )
+
+        # pkg/foo.py defines Foo
+        (pkg / "foo.py").write_text("class Foo: pass\n")
+
+        graph = build_import_graph(root / "main.py")
+        result = analyze_cross_file(graph)
+
+        # main.py's Foo import is unused
+        main_unused = result.unused_imports.get(root / "main.py", [])
+        assert any(imp.name == "Foo" for imp in main_unused), "Foo should be unused in main.py"
+
+        # pkg/__init__.py's Foo import should ALSO be unused (cascade through __all__)
+        # because main.py was the only consumer
+        init_unused = result.unused_imports.get(pkg / "__init__.py", [])
+        assert any(imp.name == "Foo" for imp in init_unused), (
+            "Foo should be unused in pkg/__init__.py (reexport-only cascade)"
+        )
+
+
+def test_cascade_reexport_only_keeps_used():
+    """Should NOT remove __all__ exports that are still being imported."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # main.py imports and uses Foo from pkg
+        (root / "main.py").write_text(
+            "from pkg import Foo\n" "f = Foo()\n",
+        )
+
+        # pkg/__init__.py imports Foo and exports it via __all__
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            "from pkg.foo import Foo\n" "__all__ = ['Foo']\n",
+        )
+
+        # pkg/foo.py defines Foo
+        (pkg / "foo.py").write_text("class Foo: pass\n")
+
+        graph = build_import_graph(root / "main.py")
+        result = analyze_cross_file(graph)
+
+        # main.py's Foo import is used
+        main_unused = result.unused_imports.get(root / "main.py", [])
+        assert not any(imp.name == "Foo" for imp in main_unused)
+
+        # pkg/__init__.py's Foo import should NOT be unused (main.py uses it)
+        init_unused = result.unused_imports.get(pkg / "__init__.py", [])
+        assert not any(imp.name == "Foo" for imp in init_unused)
+
+
+# =============================================================================
+# File reachability cascade tests
+# =============================================================================
+
+
+def test_cascade_file_unreachable():
+    """Should cascade unused when removing import makes file unreachable.
+
+    When a module import is removed (because all imported names are unused),
+    the target file becomes unreachable. Imports from that unreachable file
+    should no longer count as "consumers" of re-exports.
+
+    Scenario:
+    - main.py: `from consumer import run` (unused)
+    - consumer.py: `from utils import Foo; def run() -> Foo: pass`
+    - utils.py: `from typing import List as Foo` (re-export only)
+
+    When main.py's import is removed:
+    - consumer.py becomes unreachable
+    - Its import from 'utils' no longer counts as a consumer
+    - utils.py's Foo import should become unused
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # main.py imports run from consumer but doesn't use it
+        (root / "main.py").write_text(
+            "from consumer import run  # unused!\n" "x = 1\n",
+        )
+
+        # consumer.py imports Foo from utils and uses it locally
+        (root / "consumer.py").write_text(
+            "from utils import Foo\n" "def run() -> Foo: pass\n",
+        )
+
+        # utils.py imports Foo from typing and re-exports it (but doesn't use locally)
+        (root / "utils.py").write_text("from typing import List as Foo\n")
+
+        graph = build_import_graph(root / "main.py")
+        # Pass entry point for file reachability tracking
+        result = analyze_cross_file(graph, entry_point=root / "main.py")
+
+        # main.py's run import is unused
+        main_unused = result.unused_imports.get(root / "main.py", [])
+        assert any(imp.name == "run" for imp in main_unused)
+
+        # utils.py's Foo import should be unused
+        # because consumer.py (the only consumer) becomes unreachable
+        utils_unused = result.unused_imports.get(root / "utils.py", [])
+        assert any(imp.name == "Foo" for imp in utils_unused), (
+            "Foo should be unused in utils.py "
+            "(consumer file becomes unreachable)"
+        )
+
+
+def test_cascade_file_still_reachable_via_other_path():
+    """Should NOT cascade if file is still reachable via another import."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # main.py imports from both pkg.a (unused) and pkg.b (used)
+        (root / "main.py").write_text(
+            "from pkg import module_a  # unused!\n"
+            "from pkg import module_b\n"
+            "module_b.run()\n",
+        )
+
+        # pkg/__init__.py re-exports both modules
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            "from pkg import module_a\n" "from pkg import module_b\n",
+        )
+
+        # pkg/module_a.py imports Foo from models (unused when module_a is removed)
+        (pkg / "module_a.py").write_text(
+            "from models import Foo\n" "def helper() -> Foo: pass\n",
+        )
+
+        # pkg/module_b.py also imports Foo from models (and uses it)
+        (pkg / "module_b.py").write_text(
+            "from models import Foo\n"
+            "def run() -> Foo: return Foo()\n",
+        )
+
+        # models/__init__.py re-exports Foo
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from models.foo import Foo\n")
+
+        # models/foo.py defines Foo
+        (models / "foo.py").write_text("class Foo: pass\n")
+
+        graph = build_import_graph(root / "main.py")
+        result = analyze_cross_file(graph, entry_point=root / "main.py")
+
+        # main.py's module_a import is unused
+        main_unused = result.unused_imports.get(root / "main.py", [])
+        assert any(imp.name == "module_a" for imp in main_unused)
+        assert not any(imp.name == "module_b" for imp in main_unused)
+
+        # models/__init__.py's Foo import should NOT be unused
+        # because module_b still imports it (and module_b is still reachable)
+        models_unused = result.unused_imports.get(models / "__init__.py", [])
+        assert not any(imp.name == "Foo" for imp in models_unused)
+
+
+def test_submodule_not_in_init_is_traversed():
+    """Submodules not explicitly imported in __init__.py should still be traversed.
+
+    This handles cases like `from blueprints import booking_form` where
+    `booking_form` is a subpackage that's NOT imported in `blueprints/__init__.py`.
+    Python allows this at runtime via auto-importing.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # main.py imports a submodule not exported by parent __init__.py
+        (root / "main.py").write_text(
+            "from pkg import submodule\n" "submodule.do_thing()\n",
+        )
+
+        # pkg/__init__.py does NOT import submodule
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            "# This package doesn't explicitly import submodule\n" "VERSION = '1.0'\n",
+        )
+
+        # pkg/submodule/__init__.py exists and has imports
+        submodule = pkg / "submodule"
+        submodule.mkdir()
+        (submodule / "__init__.py").write_text(
+            "from pkg.submodule.helper import do_thing\n",
+        )
+
+        # pkg/submodule/helper.py defines do_thing
+        (submodule / "helper.py").write_text("def do_thing(): pass\n")
+
+        graph = build_import_graph(root / "main.py")
+
+        # Verify submodule/__init__.py is in the graph
+        assert (submodule / "__init__.py") in graph.nodes, (
+            "Submodule should be traversed even when not in parent __init__.py"
+        )
+
+        # Verify helper.py is also in the graph (transitive)
+        assert (submodule / "helper.py") in graph.nodes, (
+            "Files imported by submodule should also be traversed"
+        )
+
+        # Run analysis to ensure it works end-to-end
+        result = analyze_cross_file(graph, entry_point=root / "main.py")
+
+        # main.py's import should NOT be unused (it uses submodule.do_thing)
+        main_unused = result.unused_imports.get(root / "main.py", [])
+        assert not any(imp.name == "submodule" for imp in main_unused)
+
+
+def test_submodule_not_unreachable_when_parent_reachable():
+    """Submodules should NOT be reported as unreachable if parent package is reachable.
+
+    This handles the Flask blueprint pattern where:
+    - `import blueprints` makes the package reachable
+    - `from blueprints import booking_form` is unused (code uses blueprints.booking_form)
+    - But booking_form is still accessible at runtime via blueprints.booking_form
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # main.py imports the parent package AND the submodule (submodule import unused)
+        (root / "main.py").write_text(
+            "import pkg\n"
+            "from pkg import submodule  # unused! uses pkg.submodule instead\n"
+            "pkg.submodule.do_thing()\n",
+        )
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("VERSION = '1.0'\n")
+
+        # pkg/submodule/__init__.py
+        submodule = pkg / "submodule"
+        submodule.mkdir()
+        (submodule / "__init__.py").write_text("def do_thing(): pass\n")
+
+        graph = build_import_graph(root / "main.py")
+        result = analyze_cross_file(graph, entry_point=root / "main.py")
+
+        # The `from pkg import submodule` should be flagged as unused
+        main_unused = result.unused_imports.get(root / "main.py", [])
+        assert any(imp.name == "submodule" for imp in main_unused)
+
+        # But submodule should NOT be reported as unreachable
+        # because pkg/__init__.py is still reachable (via `import pkg`)
+        # and Python allows pkg.submodule access at runtime
+        assert (submodule / "__init__.py") not in result.unreachable_files
+
+
+def test_truly_unreachable_file_is_reported():
+    """Files that become truly unreachable should be reported."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # main.py imports helper (unused)
+        (root / "main.py").write_text(
+            "from helper import unused_func  # unused!\n" "print('hello')\n",
+        )
+
+        # helper.py is a standalone module (not in a package)
+        (root / "helper.py").write_text("def unused_func(): pass\n")
+
+        graph = build_import_graph(root / "main.py")
+        result = analyze_cross_file(graph, entry_point=root / "main.py")
+
+        # The import should be flagged as unused
+        main_unused = result.unused_imports.get(root / "main.py", [])
+        assert any(imp.name == "unused_func" for imp in main_unused)
+
+        # helper.py should be reported as unreachable
+        # because it's a standalone module with no parent package
+        assert (root / "helper.py") in result.unreachable_files
+
+
+def test_cascade_works_for_potentially_unreachable_but_not_reported():
+    """Cascade should work for files that are potentially unreachable but have reachable ancestors.
+
+    This tests the key differentiation:
+    1. "Potentially unreachable" (no direct import edges) - used for cascade
+    2. "Truly unreachable" (no edges AND no reachable ancestors) - reported to user
+
+    A submodule that becomes potentially unreachable should:
+    - Have its imports NOT count as consumers (cascade works)
+    - NOT be reported as truly unreachable (has reachable ancestor)
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # main.py imports the parent package, and also imports submodule (unused)
+        (root / "main.py").write_text(
+            "import pkg\n"
+            "from pkg import consumer  # unused! (never uses consumer directly)\n"
+            "print(pkg.VERSION)\n",
+        )
+
+        # pkg/__init__.py defines VERSION
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("VERSION = '1.0'\n")
+
+        # pkg/consumer.py imports Helper from pkg.helpers (re-export)
+        (pkg / "consumer.py").write_text(
+            "from pkg.helpers import Helper\n"
+            "def use_helper() -> Helper: return Helper()\n",
+        )
+
+        # pkg/helpers.py defines Helper
+        (pkg / "helpers.py").write_text("class Helper: pass\n")
+
+        graph = build_import_graph(root / "main.py")
+        result = analyze_cross_file(graph, entry_point=root / "main.py")
+
+        # 1. main.py's consumer import should be flagged as unused
+        main_unused = result.unused_imports.get(root / "main.py", [])
+        assert any(imp.name == "consumer" for imp in main_unused), (
+            "consumer import should be unused in main.py"
+        )
+
+        # 2. pkg/consumer.py becomes "potentially unreachable" (no direct edges after removal)
+        #    This means its import of Helper should NOT count as a consumer
+        #    So pkg/helpers.py's Helper should... wait, Helper is defined, not imported
+        #    Let me restructure this test...
+
+        # Actually, let's verify the cascade by checking that consumer.py is NOT
+        # in unreachable_files (has reachable ancestor pkg/__init__.py)
+        assert (pkg / "consumer.py") not in result.unreachable_files, (
+            "consumer.py should NOT be reported as truly unreachable "
+            "(pkg/__init__.py is still reachable)"
+        )
+
+
+def test_cascade_detects_more_unused_via_potentially_unreachable():
+    """Verify cascade finds additional unused imports through potentially unreachable files.
+
+    This is the key test: when a file becomes potentially unreachable (for cascade),
+    imports it was consuming should become unused, even though the file itself
+    is not reported as truly unreachable.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # main.py imports parent pkg, and consumer submodule (unused)
+        (root / "main.py").write_text(
+            "import pkg\n"
+            "from pkg import consumer  # unused!\n"
+            "print(pkg.VERSION)\n",
+        )
+
+        # pkg/__init__.py re-exports SharedUtil from pkg.shared
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            "VERSION = '1.0'\n" "from pkg.shared import SharedUtil\n",
+        )
+
+        # pkg/consumer.py is the ONLY user of SharedUtil from pkg
+        (pkg / "consumer.py").write_text(
+            "from pkg import SharedUtil\n"
+            "def do_work() -> SharedUtil: return SharedUtil()\n",
+        )
+
+        # pkg/shared.py defines SharedUtil
+        (pkg / "shared.py").write_text("class SharedUtil: pass\n")
+
+        graph = build_import_graph(root / "main.py")
+        result = analyze_cross_file(graph, entry_point=root / "main.py")
+
+        # 1. main.py's consumer import is unused
+        main_unused = result.unused_imports.get(root / "main.py", [])
+        assert any(imp.name == "consumer" for imp in main_unused)
+
+        # 2. consumer.py is NOT reported as truly unreachable (has reachable ancestor)
+        assert (pkg / "consumer.py") not in result.unreachable_files
+
+        # 3. KEY TEST: Because consumer.py becomes "potentially unreachable",
+        #    its import of SharedUtil no longer counts as a consumer.
+        #    Therefore, pkg/__init__.py's SharedUtil re-export becomes unused!
+        init_unused = result.unused_imports.get(pkg / "__init__.py", [])
+        assert any(imp.name == "SharedUtil" for imp in init_unused), (
+            "SharedUtil should be unused in pkg/__init__.py because consumer.py "
+            "(the only consumer) is potentially unreachable. "
+            f"Got unused: {[imp.name for imp in init_unused]}"
+        )

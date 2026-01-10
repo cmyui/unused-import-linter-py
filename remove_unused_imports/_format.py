@@ -27,6 +27,7 @@ def format_cross_file_results(
     fix: bool = False,
     warn_implicit_reexports: bool = False,
     warn_circular: bool = False,
+    warn_unreachable: bool = False,
     quiet: bool = False,
     fixed_files: dict[Path, int] | None = None,
 ) -> list[str]:
@@ -38,6 +39,7 @@ def format_cross_file_results(
         fix: Whether we're in fix mode
         warn_implicit_reexports: Whether to show implicit re-export warnings
         warn_circular: Whether to show circular import warnings
+        warn_unreachable: Whether to show unreachable file warnings
         quiet: Whether to suppress detailed output
         fixed_files: Dict of file -> count of imports fixed (for fix mode)
 
@@ -73,10 +75,23 @@ def format_cross_file_results(
             lines.append("")
         lines.extend(_format_circular_imports(result.circular_imports, base_path))
 
+    # Section 4: Unreachable files
+    if warn_unreachable and result.unreachable_files and not quiet:
+        if lines:
+            lines.append("")
+        lines.extend(_format_unreachable_files(result.unreachable_files, base_path))
+
     # Summary
     if lines:
         lines.append("")
-    lines.extend(_format_summary(total_unused, total_files, fix))
+    lines.extend(
+        _format_summary(
+            total_unused,
+            total_files,
+            len(result.unreachable_files) if warn_unreachable else 0,
+            fix,
+        ),
+    )
 
     return lines
 
@@ -240,19 +255,52 @@ def _format_circular_imports(
     return lines
 
 
-def _format_summary(total_unused: int, total_files: int, fix: bool) -> list[str]:
+def _format_unreachable_files(
+    unreachable_files: set[Path],
+    base_path: Path,
+) -> list[str]:
+    """Format unreachable files warning."""
+    lines: list[str] = []
+
+    # Header
+    lines.append(HORIZONTAL * 79)
+    lines.append("Unreachable Files (will become dead code after fixing imports)")
+    lines.append(HORIZONTAL * 79)
+
+    # List files
+    for file_path in sorted(unreachable_files):
+        rel_path = make_relative(file_path, base_path)
+        lines.append(f"  • {rel_path}")
+
+    return lines
+
+
+def _format_summary(
+    total_unused: int,
+    total_files: int,
+    unreachable_count: int,
+    fix: bool,
+) -> list[str]:
     """Format the summary line."""
     lines: list[str] = []
     lines.append(DOUBLE_HORIZONTAL * 79)
 
-    if total_unused == 0:
+    if total_unused == 0 and unreachable_count == 0:
         lines.append("No unused imports found")
     else:
+        parts: list[str] = []
         action = "Fixed" if fix else "Found"
-        if total_files == 1:
-            lines.append(f"{action} {total_unused} unused import(s)")
-        else:
-            lines.append(f"{action} {total_unused} unused import(s) in {total_files} file(s)")
+
+        if total_unused > 0:
+            if total_files == 1:
+                parts.append(f"{total_unused} unused import(s)")
+            else:
+                parts.append(f"{total_unused} unused import(s) in {total_files} file(s)")
+
+        if unreachable_count > 0:
+            parts.append(f"{unreachable_count} unreachable file(s)")
+
+        lines.append(f"{action} {', '.join(parts)}")
 
     lines.append(DOUBLE_HORIZONTAL * 79)
     return lines

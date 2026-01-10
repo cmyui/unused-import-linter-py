@@ -93,6 +93,45 @@ class ImportGraph:
 
         return sccs
 
+    def find_reachable_files(
+        self,
+        entry_point: Path,
+        excluded_edges: set[tuple[Path, str]] | None = None,
+    ) -> set[Path]:
+        """Find all files reachable from entry point.
+
+        Args:
+            entry_point: The starting file for traversal.
+            excluded_edges: Set of (importer, module_name) tuples representing
+                edges to exclude from traversal (as if those imports were removed).
+
+        Returns:
+            Set of file paths reachable from entry point.
+        """
+        excluded = excluded_edges or set()
+        reachable: set[Path] = set()
+        queue = deque([entry_point])
+
+        while queue:
+            node = queue.popleft()
+            if node in reachable:
+                continue
+            if node not in self.nodes:
+                continue
+            reachable.add(node)
+
+            # Follow edges that aren't excluded
+            for edge in self._imports_by_file.get(node, []):
+                if edge.imported is None:
+                    continue  # Skip external imports
+                # Check if this edge is excluded
+                if (edge.importer, edge.module_name) in excluded:
+                    continue
+                if edge.imported not in reachable:
+                    queue.append(edge.imported)
+
+        return reachable
+
     def topological_order(self) -> list[Path]:
         """Return files in topological order (dependencies first).
 
@@ -283,6 +322,38 @@ class GraphBuilder:
             # If resolved to a local file, process it recursively
             if resolved is not None:
                 self._process_file(resolved)
+
+            # For from-imports from packages, also check if imported names are submodules
+            # e.g., `from blueprints import booking_form` where booking_form
+            # is a subpackage not explicitly imported in blueprints/__init__.py
+            # Only do this for packages (__init__.py), not regular modules
+            if (
+                resolved is not None
+                and not is_external
+                and resolved.name == "__init__.py"
+            ):
+                # Get names available from the __init__.py (imports + definitions)
+                init_module = self.graph.nodes.get(resolved)
+                init_names: set[str] = set()
+                if init_module:
+                    init_names = {imp.name for imp in init_module.imports}
+                    init_names |= init_module.defined_names
+
+                for name in names:
+                    # Only check for submodule if name is NOT already available
+                    # from the __init__.py. This handles cases like:
+                    # - `from models import Foo` where Foo is re-exported in __init__.py
+                    # - `from blueprints import booking_form` where booking_form is
+                    #   a subpackage NOT imported in __init__.py
+                    if name in init_names:
+                        continue
+
+                    submodule_name = f"{module_name}.{name}"
+                    submodule_resolved = self.resolver.resolve_import(
+                        submodule_name, file_path, level,
+                    )
+                    if submodule_resolved is not None:
+                        self._process_file(submodule_resolved)
 
 
 def build_import_graph(entry_point: Path) -> ImportGraph:

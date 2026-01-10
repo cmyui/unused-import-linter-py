@@ -55,6 +55,7 @@ def check_cross_file(
     fix: bool = False,
     warn_implicit_reexports: bool = False,
     warn_circular: bool = False,
+    warn_unreachable: bool = False,
     quiet: bool = False,
 ) -> tuple[int, list[str]]:
     """Check imports across files (cross-file mode).
@@ -64,19 +65,23 @@ def check_cross_file(
         fix: Whether to fix unused imports
         warn_implicit_reexports: Whether to warn about implicit re-exports
         warn_circular: Whether to warn about circular imports
+        warn_unreachable: Whether to warn about unreachable files
         quiet: Whether to suppress individual issue messages
 
     Returns:
         Tuple of (number of issues found, list of messages)
     """
     # Build import graph
+    entry_point: Path | None = None
     if path.is_file():
         graph = build_import_graph(path)
+        entry_point = path.resolve()
     else:
         graph = build_import_graph_from_directory(path)
+        # No single entry point for directory mode
 
-    # Analyze
-    result = analyze_cross_file(graph)
+    # Analyze (pass entry point for file reachability tracking)
+    result = analyze_cross_file(graph, entry_point)
 
     # Count total issues
     total_issues = sum(len(unused) for unused in result.unused_imports.values())
@@ -96,6 +101,7 @@ def check_cross_file(
         fix=fix,
         warn_implicit_reexports=warn_implicit_reexports,
         warn_circular=warn_circular,
+        warn_unreachable=warn_unreachable,
         quiet=quiet,
         fixed_files=fixed_files,
     )
@@ -149,6 +155,7 @@ Examples:
   %(prog)s --fix main.py             Fix unused imports
   %(prog)s --warn-implicit-reexports main.py
   %(prog)s --warn-circular main.py
+  %(prog)s --warn-unreachable main.py
   %(prog)s --single-file myfile.py   Single-file mode (no cross-file tracking)
         """,
     )
@@ -183,6 +190,11 @@ Examples:
         "--warn-circular",
         action="store_true",
         help="Warn about circular import chains",
+    )
+    parser.add_argument(
+        "--warn-unreachable",
+        action="store_true",
+        help="Warn about files that become unreachable after fixing imports",
     )
 
     args = parser.parse_args()
@@ -249,6 +261,7 @@ def _main_cross_file(args: argparse.Namespace) -> int:
         fix=args.fix,
         warn_implicit_reexports=args.warn_implicit_reexports,
         warn_circular=args.warn_circular,
+        warn_unreachable=args.warn_unreachable,
         quiet=args.quiet,
     )
 
