@@ -83,7 +83,7 @@ import_analyzer/
 - `fix_indirect_imports()`: Rewrites `from X import Y` indirect imports to use direct sources
   - Groups indirect imports by target module for efficient rewriting
   - Preserves local aliases (e.g., `from utils import CONFIG as CONF` → `from core import CONFIG as CONF`)
-  - Preserves scope (function-local imports stay in function)
+  - Preserves scope (function-local and class-body imports stay in their scope)
 - `fix_indirect_attr_accesses()`: Rewrites `import X` + `X.attr` patterns to use direct sources
   - Adds new import statements at the same location/indentation as original
   - Rewrites all usage sites (`models.LOGGER` → `logger.LOGGER`)

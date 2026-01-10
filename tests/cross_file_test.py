@@ -1423,6 +1423,39 @@ def test_fix_indirect_from_import_preserves_function_scope():
         assert models_line.startswith("    ")  # indented
 
 
+def test_fix_indirect_from_import_preserves_class_scope():
+    """from-import fixes inside class bodies should stay inside the class."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'my logger'\n")
+
+        # models.py re-exports LOGGER
+        (root / "models.py").write_text("from logger import LOGGER\n")
+
+        # app.py has class-body import
+        (root / "app.py").write_text(
+            "class MyClass:\n"
+            "    from models import LOGGER\n"
+            "    log = LOGGER\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify the fix
+        app_content = (root / "app.py").read_text()
+
+        # New import should be inside the class (same scope)
+        assert "from logger import LOGGER" in app_content
+
+        # Import should be indented (inside class)
+        lines = app_content.splitlines()
+        logger_line = next(line for line in lines if "from logger import" in line)
+        assert logger_line.startswith("    ")  # indented inside class
+
+
 # =============================================================================
 # Indirect attribute access detection tests
 # =============================================================================
