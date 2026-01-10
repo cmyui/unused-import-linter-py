@@ -37,7 +37,7 @@ pytest tests/ -v
 pytest tests/detection_test.py -v
 
 # Run a specific test by name
-pytest tests/ -v -k "test_shadowed_by_assignment"
+pytest tests/ -v -k "shadowed by variable"
 
 # Run tests with coverage
 tox -e py
