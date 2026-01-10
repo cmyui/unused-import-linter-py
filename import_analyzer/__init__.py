@@ -8,6 +8,7 @@ from import_analyzer._cross_file import analyze_cross_file
 from import_analyzer._data import ImplicitReexport
 from import_analyzer._data import ImportEdge
 from import_analyzer._data import ImportInfo
+from import_analyzer._data import IndirectImport
 from import_analyzer._data import ModuleInfo
 from import_analyzer._detection import find_unused_imports
 from import_analyzer._graph import ImportGraph
@@ -27,6 +28,7 @@ __all__ = [
     "ModuleInfo",
     "ImportEdge",
     "ImplicitReexport",
+    "IndirectImport",
     "CrossFileResult",
     # Single-file analysis
     "find_unused_imports",

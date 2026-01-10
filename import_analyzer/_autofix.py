@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import ast
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
 
 from import_analyzer._data import ImportInfo
+from import_analyzer._data import IndirectImport
 
 
 def _find_block_only_imports(
@@ -102,15 +106,24 @@ def _find_semicolon_removals(
     # (statements with content on the same physical line)
     stmts_by_line: dict[int, list[ast.stmt]] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.stmt) and hasattr(node, 'lineno'):
+        if isinstance(node, ast.stmt) and hasattr(node, "lineno"):
             end_lineno = node.end_lineno or node.lineno
             # For compound statements (if, for, etc.), skip them as they
             # contain other statements rather than being semicolon-separated
             if isinstance(
-                node, (
-                    ast.If, ast.For, ast.AsyncFor, ast.While, ast.With,
-                    ast.AsyncWith, ast.Try, ast.FunctionDef, ast.AsyncFunctionDef,
-                    ast.ClassDef, ast.Match,
+                node,
+                (
+                    ast.If,
+                    ast.For,
+                    ast.AsyncFor,
+                    ast.While,
+                    ast.With,
+                    ast.AsyncWith,
+                    ast.Try,
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Match,
                 ),
             ):
                 continue
@@ -148,7 +161,7 @@ def _find_semicolon_removals(
 
             # This import should be removed - calculate the range
             start_col = stmt.col_offset
-            end_col = stmt.end_col_offset or len(line.rstrip('\n'))
+            end_col = stmt.end_col_offset or len(line.rstrip("\n"))
 
             # Determine if we need to include semicolon before or after
             # Handle any whitespace (spaces, tabs) around semicolons
@@ -156,18 +169,18 @@ def _find_semicolon_removals(
                 # First statement - remove trailing whitespace, semicolon, whitespace
                 rest = line[end_col:]
                 # Strip: optional whitespace, semicolon, optional whitespace
-                stripped = rest.lstrip(' \t')
-                if stripped.startswith(';'):
-                    stripped = stripped[1:].lstrip(' \t')
+                stripped = rest.lstrip(" \t")
+                if stripped.startswith(";"):
+                    stripped = stripped[1:].lstrip(" \t")
                 # Calculate how much extra to remove
                 end_col += len(rest) - len(stripped)
             else:
                 # Not first - remove leading whitespace, semicolon, whitespace
                 prefix = line[:start_col]
                 # Strip from right: optional whitespace, semicolon, optional whitespace
-                stripped = prefix.rstrip(' \t')
-                if stripped.endswith(';'):
-                    stripped = stripped[:-1].rstrip(' \t')
+                stripped = prefix.rstrip(" \t")
+                if stripped.endswith(";"):
+                    stripped = stripped[:-1].rstrip(" \t")
                 # Calculate new start position
                 start_col = len(stripped)
 
@@ -175,7 +188,9 @@ def _find_semicolon_removals(
 
             # For multiline imports, also mark preceding lines for removal
             if stmt.lineno != stmt.end_lineno:
-                for remove_line in range(stmt.lineno - 1, (stmt.end_lineno or stmt.lineno) - 1):
+                for remove_line in range(
+                    stmt.lineno - 1, (stmt.end_lineno or stmt.lineno) - 1,
+                ):
                     lines_to_remove.add(remove_line)
 
         if line_removals:
@@ -198,7 +213,9 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
 
     # Find surgical removals for semicolon lines
     semicolon_removals, semicolon_lines_to_remove = _find_semicolon_removals(
-        tree, source, unused_names,
+        tree,
+        source,
+        unused_names,
     )
 
     # Group unused imports by their statement line
@@ -376,15 +393,15 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
     cleaned_backslash: list[str] = []
     for idx, line in enumerate(result_lines):
         # Check if this line ends with backslash continuation
-        line_content = line.rstrip('\n\r')
-        if line_content.rstrip(' \t').endswith('\\'):
+        line_content = line.rstrip("\n\r")
+        if line_content.rstrip(" \t").endswith("\\"):
             # Check if next line exists and has content (not just whitespace)
             next_idx = idx + 1
             if next_idx >= len(result_lines) or not result_lines[next_idx].strip():
                 # Remove the trailing backslash and whitespace/semicolon before it
-                stripped = line_content.rstrip(' \t')[:-1].rstrip(' \t;')
+                stripped = line_content.rstrip(" \t")[:-1].rstrip(" \t;")
                 if stripped:
-                    cleaned_backslash.append(stripped + '\n')
+                    cleaned_backslash.append(stripped + "\n")
                 # else: line becomes empty, skip it
                 continue
         cleaned_backslash.append(line)
@@ -401,7 +418,7 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
                 first_content_idx = idx
                 break
         first_line = result_lines[first_content_idx]
-        if first_line and first_line[0] in ' \t':
+        if first_line and first_line[0] in " \t":
             # First content line has leading whitespace - strip it
             result_lines[first_content_idx] = first_line.lstrip()
         result = "".join(result_lines)
@@ -426,3 +443,142 @@ def remove_unused_imports(source: str, unused_imports: list[ImportInfo]) -> str:
             cleaned_lines.append(line)
 
     return "".join(cleaned_lines)
+
+
+@dataclass
+class _IndirectInfo:
+    """Info about an indirect import for fixing."""
+
+    module: str  # Target module name
+    original_name: str  # Name in the original source
+    local_name: str  # Name as used locally (may differ due to aliases)
+
+
+def fix_indirect_imports(
+    source: str,
+    indirect_imports: list[IndirectImport],
+    module_names: dict[Path, str],
+) -> str:
+    """Rewrite indirect imports to use direct sources.
+
+    Args:
+        source: The source code to modify
+        indirect_imports: List of indirect imports to fix
+        module_names: Mapping from file paths to module names
+
+    Returns:
+        Modified source code with indirect imports replaced
+
+    Example:
+        If we have:
+            # logger.py: LOGGER = ...
+            # models/__init__.py: from logger import LOGGER as LOG
+            # app.py: from models import LOG
+
+        The fix will produce:
+            # app.py: from logger import LOGGER as LOG
+
+        This preserves the local name (LOG) while importing from the source.
+    """
+    if not indirect_imports:
+        return source
+
+    # Build lookup: (lineno, local_name) -> _IndirectInfo
+    indirect_by_line: dict[int, dict[str, _IndirectInfo]] = defaultdict(dict)
+    for ind in indirect_imports:
+        module_name = module_names.get(ind.original_source)
+        if module_name:
+            indirect_by_line[ind.lineno][ind.name] = _IndirectInfo(
+                module=module_name,
+                original_name=ind.original_name,
+                local_name=ind.name,
+            )
+
+    if not indirect_by_line:
+        return source
+
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+
+    # Find ImportFrom nodes that need modification
+    modifications: list[tuple[int, int, str]] = []  # (start_line, end_line, new_code)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+
+        line_idx = node.lineno
+        if line_idx not in indirect_by_line:
+            continue
+
+        indirect_lookup = indirect_by_line[line_idx]
+
+        # Get all aliases in this import
+        aliases = [(alias.name, alias.asname) for alias in node.names]
+
+        # Separate into indirect and direct imports
+        # Group indirect imports by their target module
+        indirect_by_module: dict[str, list[_IndirectInfo]] = defaultdict(list)
+        direct_imports: list[tuple[str, str | None]] = []
+
+        for name, asname in aliases:
+            local_name = asname or name
+            if local_name in indirect_lookup:
+                info = indirect_lookup[local_name]
+                indirect_by_module[info.module].append(info)
+            else:
+                direct_imports.append((name, asname))
+
+        if not indirect_by_module:
+            continue
+
+        # Get original indentation
+        original_line = lines[node.lineno - 1]
+        indent = len(original_line) - len(original_line.lstrip())
+        indent_str = " " * indent
+
+        # Build new import lines
+        new_imports: list[str] = []
+
+        # Keep direct imports from original module (if any)
+        if direct_imports:
+            parts = []
+            for name, asname in direct_imports:
+                if asname:
+                    parts.append(f"{name} as {asname}")
+                else:
+                    parts.append(name)
+            module = node.module or ""
+            level = "." * node.level
+            new_imports.append(
+                f"{indent_str}from {level}{module} import {', '.join(parts)}",
+            )
+
+        # Add new imports from original sources
+        for module, infos in sorted(indirect_by_module.items()):
+            parts = []
+            for info in infos:
+                if info.original_name != info.local_name:
+                    # Need alias: from X import ORIGINAL as LOCAL
+                    parts.append(f"{info.original_name} as {info.local_name}")
+                else:
+                    parts.append(info.original_name)
+            new_imports.append(f"{indent_str}from {module} import {', '.join(parts)}")
+
+        new_code = "\n".join(new_imports)
+        end_line = node.end_lineno or node.lineno
+        modifications.append((node.lineno - 1, end_line - 1, new_code))
+
+    if not modifications:
+        return source
+
+    # Apply modifications in reverse order to preserve line numbers
+    modifications.sort(key=lambda x: x[0], reverse=True)
+
+    for start_line, end_line, new_code in modifications:
+        # Replace lines from start_line to end_line (inclusive) with new_code
+        before = lines[:start_line]
+        after = lines[end_line + 1:]
+        lines = before + [new_code + "\n"] + after
+
+    return "".join(lines)

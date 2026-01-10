@@ -56,6 +56,46 @@ class ImplicitReexport:
     used_by: set[Path] = field(default_factory=set)
 
 
+@dataclass
+class IndirectImport:
+    """An import that goes through a re-exporter instead of the source.
+
+    Example (without alias):
+        # core.py
+        CONFIG = {}  # Original definition
+
+        # utils/__init__.py
+        from core import CONFIG  # Re-exports CONFIG
+
+        # app.py (INDIRECT - this is what we detect)
+        from utils import CONFIG  # Importing from re-exporter
+
+        # app.py (DIRECT - what it should be)
+        from core import CONFIG  # Importing from source
+
+    Example (with alias):
+        # core.py
+        CONFIG = {}  # Original definition
+
+        # utils/__init__.py
+        from core import CONFIG as CONF  # Re-exports with alias
+
+        # app.py (INDIRECT)
+        from utils import CONF
+
+        # app.py (DIRECT - preserves the alias)
+        from core import CONFIG as CONF
+    """
+
+    file: Path  # File with the indirect import
+    name: str  # Name as used in the importing file (e.g., "CONF")
+    original_name: str  # Name as defined in original_source (e.g., "CONFIG")
+    lineno: int  # Line number of the import
+    current_source: Path  # Where it's imported from (re-exporter)
+    original_source: Path  # Where it's actually defined
+    is_same_package: bool  # True if re-exporter is __init__.py of original's package
+
+
 def is_under_path(file_path: Path, base_path: Path) -> bool:
     """Check if a file is under the base path."""
     try:

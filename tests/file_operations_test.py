@@ -47,7 +47,7 @@ def test_check_file_finds_unused(tmp_path, content, expected_count, expected_in_
     file_path = tmp_path / 'test.py'
     file_path.write_text(content)
 
-    count, messages = check_file(file_path, fix=False)
+    count, messages = check_file(file_path, fix_unused=False)
 
     assert count == expected_count
     message_text = '\n'.join(messages)
@@ -78,11 +78,11 @@ def test_check_file_finds_unused(tmp_path, content, expected_count, expected_in_
     ),
 )
 def test_check_file_fixes(tmp_path, content, should_not_contain, should_contain):
-    """Test that check_file with fix=True removes unused imports."""
+    """Test that check_file with fix_unused=True removes unused imports."""
     file_path = tmp_path / 'test.py'
     file_path.write_text(content)
 
-    check_file(file_path, fix=True)
+    check_file(file_path, fix_unused=True)
 
     new_content = file_path.read_text()
     assert should_not_contain not in new_content
@@ -95,7 +95,7 @@ def test_check_file_clean(tmp_path):
     file_path = tmp_path / 'test.py'
     file_path.write_text(content)
 
-    count, messages = check_file(file_path, fix=False)
+    count, messages = check_file(file_path, fix_unused=False)
 
     assert count == 0
     assert messages == []
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     file_path = tmp_path / 'test.py'
     file_path.write_text(content)
 
-    check_file(file_path, fix=True)
+    check_file(file_path, fix_unused=True)
 
     fixed_content = file_path.read_text()
     # Should compile without errors

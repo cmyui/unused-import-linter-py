@@ -507,24 +507,24 @@ def test_cascade_file_still_reachable_via_other_path():
             "from pkg import module_a\n" "from pkg import module_b\n",
         )
 
-        # pkg/module_a.py imports Foo from models (unused when module_a is removed)
+        # pkg/module_a.py imports Foo from types_pkg (unused when module_a is removed)
         (pkg / "module_a.py").write_text(
-            "from models import Foo\n" "def helper() -> Foo: pass\n",
+            "from types_pkg import Foo\n" "def helper() -> Foo: pass\n",
         )
 
-        # pkg/module_b.py also imports Foo from models (and uses it)
+        # pkg/module_b.py also imports Foo from types_pkg (and uses it)
         (pkg / "module_b.py").write_text(
-            "from models import Foo\n"
+            "from types_pkg import Foo\n"
             "def run() -> Foo: return Foo()\n",
         )
 
-        # models/__init__.py re-exports Foo
-        models = root / "models"
-        models.mkdir()
-        (models / "__init__.py").write_text("from models.foo import Foo\n")
+        # types_pkg/__init__.py re-exports Foo
+        types_pkg = root / "types_pkg"
+        types_pkg.mkdir()
+        (types_pkg / "__init__.py").write_text("from types_pkg.foo import Foo\n")
 
-        # models/foo.py defines Foo
-        (models / "foo.py").write_text("class Foo: pass\n")
+        # types_pkg/foo.py defines Foo
+        (types_pkg / "foo.py").write_text("class Foo: pass\n")
 
         graph = build_import_graph(root / "main.py")
         result = analyze_cross_file(graph, entry_point=root / "main.py")
@@ -534,10 +534,10 @@ def test_cascade_file_still_reachable_via_other_path():
         assert any(imp.name == "module_a" for imp in main_unused)
         assert not any(imp.name == "module_b" for imp in main_unused)
 
-        # models/__init__.py's Foo import should NOT be unused
+        # types_pkg/__init__.py's Foo import should NOT be unused
         # because module_b still imports it (and module_b is still reachable)
-        models_unused = result.unused_imports.get(models / "__init__.py", [])
-        assert not any(imp.name == "Foo" for imp in models_unused)
+        types_pkg_unused = result.unused_imports.get(types_pkg / "__init__.py", [])
+        assert not any(imp.name == "Foo" for imp in types_pkg_unused)
 
 
 def test_submodule_not_in_init_is_traversed():
@@ -914,3 +914,472 @@ def test_directory_mode_only_reports_files_in_scope():
         assert "pkg_b" not in output, (
             "Should NOT report unused imports from pkg_b (outside scope)"
         )
+
+
+# =============================================================================
+# Indirect import detection tests
+# =============================================================================
+
+
+def test_indirect_import_detected():
+    """Should detect imports that go through re-exporters instead of sources."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # utils/__init__.py re-exports CONFIG from core.py
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from core import CONFIG\n")
+
+        # app.py imports CONFIG from utils (indirect) instead of core (direct)
+        (root / "app.py").write_text(
+            "from utils import CONFIG\n" "print(CONFIG)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect the indirect import
+        assert len(result.indirect_imports) == 1
+        ind = result.indirect_imports[0]
+        assert ind.file == root / "app.py"
+        assert ind.name == "CONFIG"
+        assert ind.current_source == utils / "__init__.py"
+        assert ind.original_source == root / "core.py"
+        assert ind.is_same_package is False
+
+
+def test_indirect_import_multi_hop():
+    """Should trace through multiple hops to find the original source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines Helper
+        (root / "core.py").write_text("class Helper: pass\n")
+
+        # utils.py re-exports Helper from core
+        (root / "utils.py").write_text("from core import Helper\n")
+
+        # api.py re-exports Helper from utils
+        (root / "api.py").write_text("from utils import Helper\n")
+
+        # main.py imports Helper from api (3 hops from core)
+        (root / "main.py").write_text(
+            "from api import Helper\n" "h = Helper()\n",
+        )
+
+        graph = build_import_graph(root / "main.py")
+        result = analyze_cross_file(graph, entry_point=root / "main.py")
+
+        # Should detect 2 indirect imports:
+        # 1. api.py imports from utils.py (source is core.py)
+        # 2. main.py imports from api.py (source is core.py)
+        assert len(result.indirect_imports) == 2
+
+        # All should trace back to core.py as the original source
+        for ind in result.indirect_imports:
+            assert ind.name == "Helper"
+            assert ind.original_source == root / "core.py"
+
+        # main.py's import should trace through api.py
+        main_indirect = [i for i in result.indirect_imports if i.file == root / "main.py"]
+        assert len(main_indirect) == 1
+        assert main_indirect[0].current_source == root / "api.py"
+
+
+def test_same_package_reexport_not_flagged_by_default():
+    """Same-package re-exports (__init__.py re-exporting from submodule) should not be flagged."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # pkg/__init__.py re-exports Foo from pkg/foo.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("from pkg.foo import Foo\n")
+        (pkg / "foo.py").write_text("class Foo: pass\n")
+
+        # main.py imports Foo from pkg (this is the standard public API pattern)
+        (root / "main.py").write_text(
+            "from pkg import Foo\n" "f = Foo()\n",
+        )
+
+        graph = build_import_graph(root / "main.py")
+        result = analyze_cross_file(graph, entry_point=root / "main.py")
+
+        # Should NOT detect this as indirect (it's same-package re-export)
+        assert len(result.indirect_imports) == 0
+
+
+def test_same_package_reexport_flagged_with_strict_mode():
+    """Same-package re-exports should be flagged when include_same_package_indirect=True."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # pkg/__init__.py re-exports Foo from pkg/foo.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("from pkg.foo import Foo\n")
+        (pkg / "foo.py").write_text("class Foo: pass\n")
+
+        # main.py imports Foo from pkg
+        (root / "main.py").write_text(
+            "from pkg import Foo\n" "f = Foo()\n",
+        )
+
+        graph = build_import_graph(root / "main.py")
+        # With include_same_package_indirect=True
+        result = analyze_cross_file(
+            graph,
+            entry_point=root / "main.py",
+            include_same_package_indirect=True,
+        )
+
+        # Should detect this as indirect in strict mode
+        assert len(result.indirect_imports) == 1
+        ind = result.indirect_imports[0]
+        assert ind.name == "Foo"
+        assert ind.is_same_package is True
+
+
+def test_direct_import_not_flagged():
+    """Direct imports (importing from the defining module) should not be flagged."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # app.py imports CONFIG directly from core
+        (root / "app.py").write_text(
+            "from core import CONFIG\n" "print(CONFIG)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should NOT detect any indirect imports
+        assert len(result.indirect_imports) == 0
+
+
+def test_cross_package_reexport_flagged():
+    """Re-exports from different packages should always be flagged."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # helpers.py defines helper
+        (root / "helpers.py").write_text("helper = 'helper instance'\n")
+
+        # utils/__init__.py re-exports helper from helpers (cross-package)
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from helpers import helper\n")
+
+        # app.py imports helper from utils
+        (root / "app.py").write_text(
+            "from utils import helper\n" "print(helper)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect as indirect (cross-package re-export)
+        assert len(result.indirect_imports) == 1
+        ind = result.indirect_imports[0]
+        assert ind.name == "helper"
+        assert ind.is_same_package is False
+
+
+def test_mixed_direct_and_indirect_imports():
+    """Should only flag indirect imports, not direct ones from the same import."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # utils/__init__.py defines Client and re-exports helper
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text(
+            "from helpers import helper\n"
+            "class Client: pass\n",
+        )
+
+        # helpers.py defines helper
+        (root / "helpers.py").write_text("helper = 'helper instance'\n")
+
+        # app.py imports both Client (direct) and helper (indirect) from utils
+        (root / "app.py").write_text(
+            "from utils import helper, Client\n"
+            "c = Client()\n"
+            "print(helper)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should only flag helper as indirect, not Client
+        assert len(result.indirect_imports) == 1
+        ind = result.indirect_imports[0]
+        assert ind.name == "helper"
+
+
+def test_fix_indirect_imports():
+    """Should rewrite indirect imports to use direct sources."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # utils/__init__.py re-exports CONFIG from core.py
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from core import CONFIG\n")
+
+        # app.py imports CONFIG from utils (indirect)
+        (root / "app.py").write_text(
+            "from utils import CONFIG\n" "print(CONFIG)\n",
+        )
+
+        # Run with --fix-indirect-imports
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should now import directly from core
+        app_content = (root / "app.py").read_text()
+        assert "from core import CONFIG" in app_content
+        assert "from utils import CONFIG" not in app_content
+
+
+def test_fix_indirect_imports_preserves_direct():
+    """Should preserve direct imports when fixing indirect ones."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # helpers.py defines helper
+        (root / "helpers.py").write_text("helper = 'helper instance'\n")
+
+        # utils/__init__.py defines Client and re-exports helper
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text(
+            "from helpers import helper\n"
+            "class Client: pass\n",
+        )
+
+        # app.py imports both Client (direct) and helper (indirect)
+        (root / "app.py").write_text(
+            "from utils import helper, Client\n"
+            "c = Client()\n"
+            "print(helper)\n",
+        )
+
+        # Run with --fix-indirect-imports
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should now have separate imports
+        app_content = (root / "app.py").read_text()
+        assert "from helpers import helper" in app_content
+        assert "from utils import Client" in app_content
+        # Should NOT have the combined import anymore
+        assert "from utils import helper, Client" not in app_content
+        assert "from utils import helper" not in app_content
+
+
+def test_fix_indirect_and_fix_unused_cascade():
+    """Should cascade: fix indirect, then re-export file is no longer traversed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # utils/__init__.py re-exports CONFIG from core.py
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from core import CONFIG\n")
+
+        # app.py imports CONFIG from utils (indirect)
+        (root / "app.py").write_text(
+            "from utils import CONFIG\n" "print(CONFIG)\n",
+        )
+
+        # First pass: fix indirect imports
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py now imports directly from core
+        app_content = (root / "app.py").read_text()
+        assert "from core import CONFIG" in app_content
+
+        # Second pass: utils/__init__.py is no longer even in the graph
+        # because nothing imports from it anymore
+        graph = build_import_graph(root / "app.py")
+
+        # utils/__init__.py should not be traversed anymore
+        assert (utils / "__init__.py") not in graph.nodes, (
+            "utils/__init__.py should no longer be in graph after indirect fix"
+        )
+
+        # Only app.py and core.py should be in the graph now
+        assert len(graph.nodes) == 2
+        assert (root / "app.py") in graph.nodes
+        assert (root / "core.py") in graph.nodes
+
+
+def test_fix_indirect_imports_with_strict_mode():
+    """Should fix same-package re-exports when strict_indirect_imports=True."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # pkg/__init__.py re-exports Foo from pkg/foo.py (same-package re-export)
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("from pkg.foo import Foo\n")
+        (pkg / "foo.py").write_text("class Foo: pass\n")
+
+        # main.py imports Foo from pkg (indirect, but same-package)
+        (root / "main.py").write_text(
+            "from pkg import Foo\n" "f = Foo()\n",
+        )
+
+        # Without strict mode, this should NOT be fixed
+        check_cross_file(
+            root / "main.py",
+            fix_indirect=True,
+            strict_indirect_imports=False,
+        )
+
+        # main.py should still import from pkg (not fixed)
+        main_content = (root / "main.py").read_text()
+        assert "from pkg import Foo" in main_content
+
+        # Now with strict mode, it SHOULD be fixed
+        check_cross_file(
+            root / "main.py",
+            fix_indirect=True,
+            strict_indirect_imports=True,
+        )
+
+        # main.py should now import directly from pkg.foo
+        main_content = (root / "main.py").read_text()
+        assert "from pkg.foo import Foo" in main_content
+        assert "from pkg import Foo" not in main_content
+
+
+# =============================================================================
+# Aliased import chain tests
+# =============================================================================
+
+
+def test_indirect_import_with_alias_in_reexporter():
+    """Detect indirect imports where the re-exporter uses an alias."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # utils/__init__.py re-exports CONFIG as CONF
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from core import CONFIG as CONF\n")
+
+        # app.py imports CONF from utils (indirect)
+        (root / "app.py").write_text(
+            "from utils import CONF\n" "print(CONF)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect the indirect import
+        assert len(result.indirect_imports) == 1
+        ind = result.indirect_imports[0]
+        assert ind.file == root / "app.py"
+        assert ind.name == "CONF"  # Local name
+        assert ind.original_name == "CONFIG"  # Original name in core.py
+        assert ind.original_source == root / "core.py"
+
+
+def test_fix_indirect_import_with_alias_preserves_local_name():
+    """Fix should preserve local name when original source uses different name."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # utils/__init__.py re-exports CONFIG as CONF
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from core import CONFIG as CONF\n")
+
+        # app.py imports CONF from utils
+        (root / "app.py").write_text(
+            "from utils import CONF\n" "print(CONF)\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should now import from core with alias
+        app_content = (root / "app.py").read_text()
+        assert "from core import CONFIG as CONF" in app_content
+        assert "from utils import CONF" not in app_content
+
+
+def test_fix_indirect_import_multi_hop_alias():
+    """Fix should handle aliases through multiple hops."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # base.py defines SETTING
+        (root / "base.py").write_text("SETTING = 'value'\n")
+
+        # middle.py re-exports SETTING as CFG
+        (root / "middle.py").write_text("from base import SETTING as CFG\n")
+
+        # utils/__init__.py re-exports CFG as CONF
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from middle import CFG as CONF\n")
+
+        # app.py imports CONF from utils
+        (root / "app.py").write_text(
+            "from utils import CONF\n" "print(CONF)\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should now import from base with alias preserving local name
+        app_content = (root / "app.py").read_text()
+        assert "from base import SETTING as CONF" in app_content
+        assert "from utils import CONF" not in app_content
+
+
+def test_indirect_import_no_alias_needed():
+    """When original name matches local name, no alias should be added."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # utils/__init__.py re-exports CONFIG (no alias)
+        utils = root / "utils"
+        utils.mkdir()
+        (utils / "__init__.py").write_text("from core import CONFIG\n")
+
+        # app.py imports CONFIG from utils
+        (root / "app.py").write_text(
+            "from utils import CONFIG\n" "print(CONFIG)\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should import without alias (names match)
+        app_content = (root / "app.py").read_text()
+        assert "from core import CONFIG" in app_content
+        assert "as CONFIG" not in app_content  # No alias needed

@@ -25,7 +25,7 @@ def make_relative(path: Path, base: Path) -> str:
 def format_cross_file_results(
     result: CrossFileResult,
     base_path: Path,
-    fix: bool = False,
+    fix_unused: bool = False,
     warn_implicit_reexports: bool = False,
     warn_circular: bool = False,
     warn_unreachable: bool = False,
@@ -37,7 +37,7 @@ def format_cross_file_results(
     Args:
         result: The cross-file analysis result
         base_path: Base path for making paths relative (also filters results)
-        fix: Whether we're in fix mode
+        fix_unused: Whether we're in fix mode
         warn_implicit_reexports: Whether to show implicit re-export warnings
         warn_circular: Whether to show circular import warnings
         warn_unreachable: Whether to show unreachable file warnings
@@ -68,7 +68,7 @@ def format_cross_file_results(
     # Section 1: Unused imports (grouped by file, then by line)
     if filtered_unused and not quiet:
         lines.extend(
-            _format_unused_imports(filtered_unused, base_path, fix, fixed_files),
+            _format_unused_imports(filtered_unused, base_path, fix_unused, fixed_files),
         )
 
     # Section 2: Implicit re-exports (filtered to base_path)
@@ -109,7 +109,7 @@ def format_cross_file_results(
             total_unused,
             total_files,
             len(filtered_unreachable) if warn_unreachable else 0,
-            fix,
+            fix_unused,
         ),
     )
 
@@ -119,7 +119,7 @@ def format_cross_file_results(
 def _format_unused_imports(
     unused_imports: dict[Path, list[ImportInfo]],
     base_path: Path,
-    fix: bool,
+    fix_unused: bool,
     fixed_files: dict[Path, int] | None,
 ) -> list[str]:
     """Format unused imports grouped by file and line."""
@@ -145,7 +145,7 @@ def _format_unused_imports(
             lines.extend(_format_line_imports(lineno, imps))
 
         # Add "fixed" note if applicable
-        if fix and fixed_files and file_path in fixed_files:
+        if fix_unused and fixed_files and file_path in fixed_files:
             count = fixed_files[file_path]
             lines.append(f"  └─ Fixed {count} import(s)")
 
@@ -299,7 +299,7 @@ def _format_summary(
     total_unused: int,
     total_files: int,
     unreachable_count: int,
-    fix: bool,
+    fix_unused: bool,
 ) -> list[str]:
     """Format the summary line."""
     lines: list[str] = []
@@ -309,7 +309,7 @@ def _format_summary(
         lines.append("No unused imports found")
     else:
         parts: list[str] = []
-        action = "Fixed" if fix else "Found"
+        action = "Fixed" if fix_unused else "Found"
 
         if total_unused > 0:
             if total_files == 1:

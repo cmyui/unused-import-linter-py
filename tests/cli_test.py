@@ -122,11 +122,11 @@ def test_main_with_unused(tmp_path, monkeypatch, capsys):
 
 
 def test_main_with_fix(tmp_path, monkeypatch, capsys):
-    """Test main() with --fix flag."""
+    """Test main() with --fix-unused-imports flag."""
     dirty_file = tmp_path / "dirty.py"
     dirty_file.write_text("import os\nprint('hello')\n")
 
-    monkeypatch.setattr(sys, 'argv', ['prog', '--fix', str(dirty_file)])
+    monkeypatch.setattr(sys, 'argv', ['prog', '--fix-unused-imports', str(dirty_file)])
 
     result = main()
 
@@ -237,7 +237,7 @@ def test_cross_file_reexport_not_unused(tmp_path):
 
 
 def test_cross_file_fix_preserves_reexports(tmp_path):
-    """--fix should preserve re-exported imports."""
+    """--fix-unused-imports should preserve re-exported imports."""
     (tmp_path / "main.py").write_text(
         "from utils import List\nx: List[int] = []\n",
     )
@@ -245,7 +245,7 @@ def test_cross_file_fix_preserves_reexports(tmp_path):
         "from typing import List, Dict\n",
     )
 
-    check_cross_file(tmp_path / "main.py", fix=True)
+    check_cross_file(tmp_path / "main.py", fix_unused=True)
 
     # List should be preserved (re-exported), Dict removed
     utils_content = (tmp_path / "utils.py").read_text()
@@ -363,14 +363,14 @@ def test_main_cross_file_with_warn_circular(tmp_path, monkeypatch, capsys):
 
 
 def test_main_cross_file_fix(tmp_path, monkeypatch, capsys):
-    """Test --fix in cross-file mode."""
+    """Test --fix-unused-imports in cross-file mode."""
     (tmp_path / "main.py").write_text(
         "from utils import List\nx: List[int] = []\n",
     )
     (tmp_path / "utils.py").write_text("from typing import List, Dict\n")
 
     monkeypatch.setattr(
-        sys, 'argv', ['prog', '--fix', str(tmp_path / "main.py")],
+        sys, 'argv', ['prog', '--fix-unused-imports', str(tmp_path / "main.py")],
     )
 
     result = main()

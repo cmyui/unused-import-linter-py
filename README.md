@@ -2,6 +2,9 @@
 
 [![build status](https://github.com/cmyui/import-analyzer-py/actions/workflows/ci.yml/badge.svg)](https://github.com/cmyui/import-analyzer-py/actions/workflows/ci.yml)
 
+> [!WARNING]
+> This project is in early development and will undergo significant changes. The API is not stable and may change without notice.
+
 A Python import analyzer with cross-file analysis, unused import detection, circular import warnings, and autofix.
 
 ## Comparison with Other Tools
@@ -89,7 +92,7 @@ repos:
 ```
 
 The cross-file hook runs with all features enabled by default:
-`--fix --warn-implicit-reexports --warn-circular --warn-unreachable`
+`--fix-unused-imports --warn-implicit-reexports --warn-circular --warn-unreachable`
 
 To customize:
 
@@ -98,7 +101,7 @@ hooks:
   - id: import-analyzer
     args: [.]  # check only, no warnings
   - id: import-analyzer
-    args: [., --fix]  # fix but no warnings
+    args: [., --fix-unused-imports]  # fix but no warnings
 ```
 
 ## Usage
@@ -115,7 +118,7 @@ import-analyzer main.py
 import-analyzer src/
 
 # Fix all unused imports (including cascaded ones)
-import-analyzer --fix main.py
+import-analyzer --fix-unused-imports main.py
 
 # Warn about implicit re-exports (imports used by other files but not in __all__)
 import-analyzer --warn-implicit-reexports main.py
@@ -146,7 +149,7 @@ import-analyzer --single-file src/*.py
 
 | Code | Meaning                                       |
 | ---- | --------------------------------------------- |
-| 0    | No unused imports found (or `--fix` was used) |
+| 0    | No unused imports found (or `--fix-unused-imports` was used) |
 | 1    | Unused imports found                          |
 
 ## Features
@@ -210,7 +213,7 @@ def get_home() -> Optional[Path]:
     return Path(os.environ.get("HOME"))
 ```
 
-After (`--fix`):
+After (`--fix-unused-imports`):
 
 ```python
 import os
@@ -247,7 +250,7 @@ from utils import List    # becomes unused when main.py's import is removed
 from typing import List   # becomes unused when helpers.py's import is removed
 ```
 
-Running `import-analyzer --fix main.py` removes all three imports in a single pass.
+Running `import-analyzer --fix-unused-imports main.py` removes all three imports in a single pass.
 
 Note: Imports listed in `__all__` are always considered "used" (public API declaration) and won't be removed by cascade detection. This matches the behavior of flake8, ruff, and autoflake.
 

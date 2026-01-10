@@ -61,7 +61,7 @@ def test_format_groups_by_file(tmp_path: Path) -> None:
     }
 
     lines = format_cross_file_results(
-        result, base_path=base, fix=False,
+        result, base_path=base, fix_unused=False,
     )
     output = "\n".join(lines)
 
@@ -95,7 +95,7 @@ def test_format_groups_same_line_imports(tmp_path: Path) -> None:
     }
 
     lines = format_cross_file_results(
-        result, base_path=base, fix=False,
+        result, base_path=base, fix_unused=False,
     )
     output = "\n".join(lines)
 
@@ -125,7 +125,7 @@ def test_format_implicit_reexports_section(tmp_path: Path) -> None:
 
     lines = format_cross_file_results(
         result, base_path=base,
-        warn_implicit_reexports=True, fix=False,
+        warn_implicit_reexports=True, fix_unused=False,
     )
     output = "\n".join(lines)
 
@@ -148,7 +148,7 @@ def test_format_circular_imports_section(tmp_path: Path) -> None:
 
     lines = format_cross_file_results(
         result, base_path=base,
-        warn_circular=True, fix=False,
+        warn_circular=True, fix_unused=False,
     )
     output = "\n".join(lines)
 
@@ -173,7 +173,7 @@ def test_format_long_cycle_abbreviated(tmp_path: Path) -> None:
 
     lines = format_cross_file_results(
         result, base_path=base,
-        warn_circular=True, fix=False,
+        warn_circular=True, fix_unused=False,
     )
     output = "\n".join(lines)
 
@@ -189,7 +189,7 @@ def test_format_summary_when_no_issues(tmp_path: Path) -> None:
     result = CrossFileResult()
 
     lines = format_cross_file_results(
-        result, base_path=base, fix=False,
+        result, base_path=base, fix_unused=False,
     )
     output = "\n".join(lines)
 
@@ -215,7 +215,7 @@ def test_format_summary_with_issues(tmp_path: Path) -> None:
     }
 
     lines = format_cross_file_results(
-        result, base_path=base, fix=False,
+        result, base_path=base, fix_unused=False,
     )
     output = "\n".join(lines)
 
@@ -241,7 +241,7 @@ def test_format_quiet_mode_shows_only_summary(tmp_path: Path) -> None:
     }
 
     lines = format_cross_file_results(
-        result, base_path=base, fix=False, quiet=True,
+        result, base_path=base, fix_unused=False, quiet=True,
     )
     output = "\n".join(lines)
 
@@ -270,7 +270,7 @@ def test_format_fixed_shows_fixed_count(tmp_path: Path) -> None:
 
     lines = format_cross_file_results(
         result, base_path=base,
-        fix=True, fixed_files={file1: 1},
+        fix_unused=True, fixed_files={file1: 1},
     )
     output = "\n".join(lines)
 

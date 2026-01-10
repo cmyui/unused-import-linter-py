@@ -8,6 +8,7 @@ from pathlib import Path
 
 from import_analyzer._data import ImplicitReexport
 from import_analyzer._data import ImportInfo
+from import_analyzer._data import IndirectImport
 from import_analyzer._detection import find_unused_imports
 from import_analyzer._graph import ImportGraph
 
@@ -22,6 +23,9 @@ class CrossFileResult:
     # Imports used by other files but not in __all__
     implicit_reexports: list[ImplicitReexport] = field(default_factory=list)
 
+    # Imports going through re-exporters instead of direct sources
+    indirect_imports: list[IndirectImport] = field(default_factory=list)
+
     # External module usage across the project: module -> files using it
     external_usage: dict[str, set[Path]] = field(default_factory=dict)
 
@@ -35,9 +39,15 @@ class CrossFileResult:
 class CrossFileAnalyzer:
     """Analyze imports across multiple files."""
 
-    def __init__(self, graph: ImportGraph, entry_point: Path | None = None) -> None:
+    def __init__(
+        self,
+        graph: ImportGraph,
+        entry_point: Path | None = None,
+        include_same_package_indirect: bool = False,
+    ) -> None:
         self.graph = graph
         self.entry_point = entry_point
+        self.include_same_package_indirect = include_same_package_indirect
 
     def analyze(self) -> CrossFileResult:
         """Run cross-file analysis.
@@ -143,6 +153,9 @@ class CrossFileAnalyzer:
         # Filter to only files that are truly dead code (no reachable ancestors)
         truly_unreachable = self._filter_truly_unreachable(unreachable_files, all_removed)
         result.unreachable_files = truly_unreachable - {self.entry_point}
+
+        # Step 9: Find indirect imports (imports through re-exporters)
+        result.indirect_imports = self._find_indirect_imports()
 
         return result
 
@@ -406,10 +419,168 @@ class CrossFileAnalyzer:
 
         return dict(usage)
 
+    def _find_indirect_imports(self) -> list[IndirectImport]:
+        """Find imports that go through re-exporters instead of direct sources.
+
+        An indirect import is when file A imports name X from file B,
+        but B doesn't define X - it imports X from file C.
+
+        By default, same-package re-exports are allowed (e.g., pkg/__init__.py
+        re-exporting from pkg/module.py). Use include_same_package_indirect=True
+        to flag those as well.
+        """
+        results: list[IndirectImport] = []
+
+        for edge in self.graph.edges:
+            if edge.is_external or edge.imported is None:
+                continue
+
+            imported_module = self.graph.nodes.get(edge.imported)
+            if not imported_module:
+                continue
+
+            # For each name imported from this module
+            for name in edge.names:
+                # Check if this name is a re-export (import, not definition)
+                if name in imported_module.defined_names:
+                    continue  # Defined here, not indirect
+
+                # Find where this module got the name from (and original name)
+                trace_result = self._trace_import_source(edge.imported, name)
+                if trace_result is None:
+                    continue  # Can't trace
+                original_source, original_name = trace_result
+                if original_source == edge.imported:
+                    continue  # Already at source
+
+                # Check if same-package re-export
+                is_same_pkg = self._is_same_package_reexport(
+                    edge.imported,
+                    original_source,
+                )
+
+                if is_same_pkg and not self.include_same_package_indirect:
+                    continue  # Skip same-package re-exports by default
+
+                # Find the line number for this import
+                lineno = self._find_import_lineno(edge.importer, edge.imported, name)
+
+                results.append(
+                    IndirectImport(
+                        file=edge.importer,
+                        name=name,
+                        original_name=original_name,
+                        lineno=lineno,
+                        current_source=edge.imported,
+                        original_source=original_source,
+                        is_same_package=is_same_pkg,
+                    ),
+                )
+
+        # Sort by file, then line number for consistent output
+        results.sort(key=lambda x: (x.file, x.lineno, x.name))
+        return results
+
+    def _trace_import_source(
+        self,
+        file: Path,
+        name: str,
+    ) -> tuple[Path, str] | None:
+        """Trace an import back to its original definition.
+
+        Follows the import chain until we find a file that actually defines
+        the name (not just re-exports it). Handles aliases along the way.
+
+        Returns:
+            Tuple of (source_file, original_name) where original_name is the
+            name as defined in source_file (may differ from input name if
+            aliases were used in the chain). Returns None if can't trace.
+        """
+        visited: set[Path] = set()
+        current = file
+        current_name = name
+
+        while current not in visited:
+            visited.add(current)
+            module = self.graph.nodes.get(current)
+            if not module:
+                return None
+
+            # If defined here, this is the source
+            if current_name in module.defined_names:
+                return (current, current_name)
+
+            # Find where this module imports the name from
+            found_next = False
+            for imp in module.imports:
+                if imp.name == current_name:
+                    # Follow the original_name if aliased
+                    next_name = imp.original_name
+                    # Find the edge for this import
+                    for edge in self.graph.get_imports(current):
+                        if current_name in edge.names and edge.imported:
+                            current = edge.imported
+                            current_name = next_name
+                            found_next = True
+                            break
+                    break
+
+            if not found_next:
+                return None  # Can't trace further
+
+        return None  # Circular, can't determine
+
+    def _is_same_package_reexport(self, reexporter: Path, source: Path) -> bool:
+        """Check if reexporter is __init__.py re-exporting from its own package.
+
+        Returns True if:
+        1. reexporter is an __init__.py file, AND
+        2. source is within the same package directory
+
+        This pattern is acceptable because __init__.py commonly defines
+        the public API of a package by re-exporting from submodules.
+        """
+        if reexporter.name != "__init__.py":
+            return False
+
+        # Get the package directory (parent of __init__.py)
+        pkg_dir = reexporter.parent.resolve()
+        source_resolved = source.resolve()
+
+        # Check if source is within the package directory
+        try:
+            source_resolved.relative_to(pkg_dir)
+            return True
+        except ValueError:
+            return False
+
+    def _find_import_lineno(
+        self,
+        importer: Path,
+        imported: Path,
+        name: str,
+    ) -> int:
+        """Find the line number of a specific import in a file."""
+        module = self.graph.nodes.get(importer)
+        if not module:
+            return 0
+
+        # Look for the import that matches both the source and name
+        for imp in module.imports:
+            if imp.name == name:
+                # Verify this import is from the right module
+                for edge in self.graph.get_imports(importer):
+                    if edge.imported == imported and name in edge.names:
+                        return imp.lineno
+
+        return 0
+
 
 def analyze_cross_file(
-    graph: ImportGraph, entry_point: Path | None = None,
+    graph: ImportGraph,
+    entry_point: Path | None = None,
+    include_same_package_indirect: bool = False,
 ) -> CrossFileResult:
     """Convenience function for cross-file analysis."""
-    analyzer = CrossFileAnalyzer(graph, entry_point)
+    analyzer = CrossFileAnalyzer(graph, entry_point, include_same_package_indirect)
     return analyzer.analyze()

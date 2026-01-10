@@ -384,8 +384,8 @@ class GraphBuilder:
                 for name in names:
                     # Only check for submodule if name is NOT already available
                     # from the __init__.py. This handles cases like:
-                    # - `from models import Foo` where Foo is re-exported in __init__.py
-                    # - `from mypkg import submodule` where submodule is
+                    # - `from pkg import Foo` where Foo is re-exported in __init__.py
+                    # - `from pkg import submodule` where submodule is
                     #   a subpackage NOT imported in __init__.py
                     if name in init_names:
                         continue
