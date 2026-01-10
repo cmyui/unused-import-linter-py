@@ -78,8 +78,10 @@ def test_collect_non_python_file(tmp_path: Path) -> None:
 
 
 def test_main_no_files(tmp_path, monkeypatch, capsys):
-    """Test main() with no Python files found."""
-    monkeypatch.setattr(sys, 'argv', ['prog', str(tmp_path / 'nonexistent')])
+    """Test main() with no Python files found (single-file mode)."""
+    monkeypatch.setattr(
+        sys, 'argv', ['prog', '--single-file', str(tmp_path / 'nonexistent')],
+    )
 
     result = main()
 
@@ -153,13 +155,15 @@ def test_main_quiet_mode(tmp_path, monkeypatch, capsys):
 
 
 def test_main_multiple_files(tmp_path, monkeypatch, capsys):
-    """Test main() with multiple files."""
+    """Test main() with multiple files (single-file mode)."""
     file1 = tmp_path / "file1.py"
     file1.write_text("import os\n")
     file2 = tmp_path / "file2.py"
     file2.write_text("import sys\n")
 
-    monkeypatch.setattr(sys, 'argv', ['prog', str(file1), str(file2)])
+    monkeypatch.setattr(
+        sys, 'argv', ['prog', '--single-file', str(file1), str(file2)],
+    )
 
     result = main()
 

@@ -529,6 +529,7 @@ class ImportExtractor(ast.NodeVisitor):
                     is_from_import=False,
                     full_node_lineno=node.lineno,
                     full_node_end_lineno=node.end_lineno or node.lineno,
+                    level=0,  # Regular imports are always absolute
                 ),
             )
         self.generic_visit(node)
@@ -558,6 +559,7 @@ class ImportExtractor(ast.NodeVisitor):
                     is_from_import=True,
                     full_node_lineno=node.lineno,
                     full_node_end_lineno=node.end_lineno or node.lineno,
+                    level=node.level,  # Number of dots for relative imports
                 ),
             )
         self.generic_visit(node)
