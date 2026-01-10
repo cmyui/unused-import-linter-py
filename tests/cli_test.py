@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from remove_unused_imports._main import check_file
 from remove_unused_imports._main import collect_python_files
 from remove_unused_imports._main import main
@@ -14,6 +16,7 @@ from remove_unused_imports._main import main
 # =============================================================================
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='chmod not effective on Windows')
 def test_check_file_read_error(tmp_path):
     """Test handling of file read errors."""
     # Create a file and then make it unreadable
