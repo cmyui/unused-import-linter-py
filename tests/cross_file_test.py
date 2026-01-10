@@ -9,6 +9,8 @@ import pytest
 
 from remove_unused_imports._cross_file import analyze_cross_file
 from remove_unused_imports._graph import build_import_graph
+from remove_unused_imports._graph import build_import_graph_from_directory
+from remove_unused_imports._main import check_cross_file
 
 # =============================================================================
 # Re-export detection tests
@@ -763,4 +765,151 @@ def test_cascade_detects_more_unused_via_potentially_unreachable():
             "SharedUtil should be unused in pkg/__init__.py because consumer.py "
             "(the only consumer) is potentially unreachable. "
             f"Got unused: {[imp.name for imp in init_unused]}"
+        )
+
+
+# =============================================================================
+# Package directory mode: source root and scope filtering tests
+# =============================================================================
+
+
+def test_package_directory_internal_imports_resolve():
+    """When analyzing a package directory, internal imports should resolve.
+
+    Bug fix: Previously, analyzing pkg/ set source_root=pkg/, causing
+    `from pkg import X` in pkg/module.py to fail resolution (looked for
+    pkg/pkg/__init__.py instead of pkg/__init__.py).
+
+    Now source_root=pkg_parent/ so internal imports resolve correctly.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # Create a package with internal imports
+        pkg = root / "mypkg"
+        pkg.mkdir()
+
+        # mypkg/__init__.py exports helper
+        (pkg / "__init__.py").write_text(
+            "from mypkg.utils import helper\n",
+        )
+
+        # mypkg/utils.py defines helper
+        (pkg / "utils.py").write_text(
+            "def helper(): pass\n",
+        )
+
+        # mypkg/module.py imports helper from the package
+        (pkg / "module.py").write_text(
+            "from mypkg import helper\n"
+            "helper()\n",
+        )
+
+        # Build graph from the package directory
+        graph = build_import_graph_from_directory(pkg)
+
+        # Check that module.py's import of 'mypkg' resolved correctly
+        module_path = (pkg / "module.py").resolve()
+        init_path = (pkg / "__init__.py").resolve()
+
+        # Find the edge from module.py importing from mypkg
+        edge_to_init = None
+        for edge in graph.get_imports(module_path):
+            if edge.module_name == "mypkg":
+                edge_to_init = edge
+                break
+
+        assert edge_to_init is not None, "Should find import edge for 'mypkg'"
+        assert edge_to_init.imported == init_path, (
+            f"'from mypkg import helper' should resolve to {init_path}, "
+            f"got {edge_to_init.imported}"
+        )
+
+
+def test_package_directory_reexport_within_package():
+    """Re-exports within a package should be detected when analyzing package dir.
+
+    When pkg/module.py does `from pkg import helper`, and helper is defined in
+    pkg/utils.py but re-exported via pkg/__init__.py, the re-export chain
+    should be properly detected.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # Create a package
+        pkg = root / "mypkg"
+        pkg.mkdir()
+
+        # mypkg/__init__.py re-exports helper from utils
+        (pkg / "__init__.py").write_text(
+            "from mypkg.utils import helper\n",
+        )
+
+        # mypkg/utils.py defines helper
+        (pkg / "utils.py").write_text(
+            "def helper(): pass\n",
+        )
+
+        # mypkg/consumer.py imports and uses helper from the package
+        (pkg / "consumer.py").write_text(
+            "from mypkg import helper\n"
+            "helper()\n",
+        )
+
+        # Build and analyze
+        graph = build_import_graph_from_directory(pkg)
+        result = analyze_cross_file(graph)
+
+        # __init__.py's helper import should NOT be unused (re-exported to consumer.py)
+        init_unused = result.unused_imports.get((pkg / "__init__.py").resolve(), [])
+        assert not any(imp.name == "helper" for imp in init_unused), (
+            "helper should NOT be unused in __init__.py (re-exported to consumer.py)"
+        )
+
+
+def test_directory_mode_only_reports_files_in_scope():
+    """When analyzing a directory, only files under that dir should be reported.
+
+    The graph may include files discovered via imports (sibling packages),
+    but unused imports should only be reported for files within the target dir.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # Create two sibling packages
+        pkg_a = root / "pkg_a"
+        pkg_b = root / "pkg_b"
+        pkg_a.mkdir()
+        pkg_b.mkdir()
+
+        # pkg_a/__init__.py - has unused import
+        (pkg_a / "__init__.py").write_text(
+            "import os  # unused in pkg_a\n",
+        )
+
+        # pkg_a/module.py - imports from sibling pkg_b
+        (pkg_a / "module.py").write_text(
+            "from pkg_b import helper\n"
+            "helper()\n",
+        )
+
+        # pkg_b/__init__.py - has unused import
+        (pkg_b / "__init__.py").write_text(
+            "import sys  # unused in pkg_b\n"
+            "def helper(): pass\n",
+        )
+
+        # Analyze only pkg_a
+        count, messages = check_cross_file(pkg_a)
+
+        # Should only find unused import in pkg_a, not pkg_b
+        output = "\n".join(messages)
+
+        # pkg_a's unused 'os' should be reported
+        assert "os" in output, "Should report unused 'os' from pkg_a"
+
+        # pkg_b's unused 'sys' should NOT be reported (outside scope)
+        # Check that pkg_b is not mentioned in file paths
+        assert "pkg_b" not in output, (
+            "Should NOT report unused imports from pkg_b (outside scope)"
         )

@@ -363,8 +363,20 @@ def build_import_graph(entry_point: Path) -> ImportGraph:
 
 
 def build_import_graph_from_directory(directory: Path) -> ImportGraph:
-    """Convenience function to build an import graph from a directory."""
-    # Use a dummy entry point at the directory level
-    dummy_entry = directory / "__entry__.py"
+    """Convenience function to build an import graph from a directory.
+
+    If the directory is a package (has __init__.py), the source root is set
+    to the parent directory so that imports like `from package import X`
+    resolve correctly when analyzing files inside the package.
+    """
+    directory = directory.resolve()
+
+    # If directory is a package, use parent as source root
+    # This ensures `from package import X` resolves to package/__init__.py
+    if (directory / "__init__.py").exists():
+        dummy_entry = directory.parent / "__entry__.py"
+    else:
+        dummy_entry = directory / "__entry__.py"
+
     builder = GraphBuilder(dummy_entry)
     return builder.build_from_directory(directory)

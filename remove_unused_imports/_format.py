@@ -7,6 +7,7 @@ from pathlib import Path
 from remove_unused_imports._cross_file import CrossFileResult
 from remove_unused_imports._data import ImplicitReexport
 from remove_unused_imports._data import ImportInfo
+from remove_unused_imports._data import is_under_path
 
 # Box drawing characters for nicer output
 HORIZONTAL = "─"
@@ -35,7 +36,7 @@ def format_cross_file_results(
 
     Args:
         result: The cross-file analysis result
-        base_path: Base path for making paths relative
+        base_path: Base path for making paths relative (also filters results)
         fix: Whether we're in fix mode
         warn_implicit_reexports: Whether to show implicit re-export warnings
         warn_circular: Whether to show circular import warnings
@@ -48,38 +49,57 @@ def format_cross_file_results(
     """
     lines: list[str] = []
 
-    # Resolve base path for relative path calculation
+    # Resolve base path for relative path calculation and filtering
     if base_path.is_file():
         base_path = base_path.parent
     base_path = base_path.resolve()
 
-    # Count totals
-    total_unused = sum(len(unused) for unused in result.unused_imports.values())
-    total_files = len(result.unused_imports)
+    # Filter results to only files under base_path
+    # (graph may include files discovered via imports outside the target directory)
+    filtered_unused = {
+        fp: unused for fp, unused in result.unused_imports.items()
+        if is_under_path(fp, base_path)
+    }
+
+    # Count totals (from filtered results)
+    total_unused = sum(len(unused) for unused in filtered_unused.values())
+    total_files = len(filtered_unused)
 
     # Section 1: Unused imports (grouped by file, then by line)
-    if result.unused_imports and not quiet:
+    if filtered_unused and not quiet:
         lines.extend(
-            _format_unused_imports(result.unused_imports, base_path, fix, fixed_files),
+            _format_unused_imports(filtered_unused, base_path, fix, fixed_files),
         )
 
-    # Section 2: Implicit re-exports
-    if warn_implicit_reexports and result.implicit_reexports and not quiet:
+    # Section 2: Implicit re-exports (filtered to base_path)
+    filtered_reexports = [
+        r for r in result.implicit_reexports
+        if is_under_path(r.source_file, base_path)
+    ]
+    if warn_implicit_reexports and filtered_reexports and not quiet:
         if lines:
             lines.append("")
-        lines.extend(_format_implicit_reexports(result.implicit_reexports, base_path))
+        lines.extend(_format_implicit_reexports(filtered_reexports, base_path))
 
-    # Section 3: Circular imports
-    if warn_circular and result.circular_imports and not quiet:
+    # Section 3: Circular imports (filtered to cycles involving base_path files)
+    filtered_cycles = [
+        cycle for cycle in result.circular_imports
+        if any(is_under_path(p, base_path) for p in cycle)
+    ]
+    if warn_circular and filtered_cycles and not quiet:
         if lines:
             lines.append("")
-        lines.extend(_format_circular_imports(result.circular_imports, base_path))
+        lines.extend(_format_circular_imports(filtered_cycles, base_path))
 
-    # Section 4: Unreachable files
-    if warn_unreachable and result.unreachable_files and not quiet:
+    # Section 4: Unreachable files (filtered to base_path)
+    filtered_unreachable = {
+        fp for fp in result.unreachable_files
+        if is_under_path(fp, base_path)
+    }
+    if warn_unreachable and filtered_unreachable and not quiet:
         if lines:
             lines.append("")
-        lines.extend(_format_unreachable_files(result.unreachable_files, base_path))
+        lines.extend(_format_unreachable_files(filtered_unreachable, base_path))
 
     # Summary
     if lines:
@@ -88,7 +108,7 @@ def format_cross_file_results(
         _format_summary(
             total_unused,
             total_files,
-            len(result.unreachable_files) if warn_unreachable else 0,
+            len(filtered_unreachable) if warn_unreachable else 0,
             fix,
         ),
     )

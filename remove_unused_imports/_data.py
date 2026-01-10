@@ -54,3 +54,12 @@ class ImplicitReexport:
     source_file: Path
     import_name: str
     used_by: set[Path] = field(default_factory=set)
+
+
+def is_under_path(file_path: Path, base_path: Path) -> bool:
+    """Check if a file is under the base path."""
+    try:
+        file_path.relative_to(base_path)
+        return True
+    except ValueError:
+        return False

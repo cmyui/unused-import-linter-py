@@ -7,6 +7,7 @@ from pathlib import Path
 from remove_unused_imports._autofix import remove_unused_imports
 from remove_unused_imports._cross_file import analyze_cross_file
 from remove_unused_imports._data import ImportInfo
+from remove_unused_imports._data import is_under_path
 from remove_unused_imports._detection import find_unused_imports
 from remove_unused_imports._format import format_cross_file_results
 from remove_unused_imports._graph import build_import_graph
@@ -83,13 +84,23 @@ def check_cross_file(
     # Analyze (pass entry point for file reachability tracking)
     result = analyze_cross_file(graph, entry_point)
 
-    # Count total issues
-    total_issues = sum(len(unused) for unused in result.unused_imports.values())
+    # Filter results to only files under the target path
+    # (graph may include files discovered via imports outside the target directory)
+    target_path = path.parent if path.is_file() else path
+    target_path = target_path.resolve()
 
-    # Fix files if requested
+    filtered_unused = {
+        fp: unused for fp, unused in result.unused_imports.items()
+        if is_under_path(fp, target_path)
+    }
+
+    # Count total issues (from filtered results)
+    total_issues = sum(len(unused) for unused in filtered_unused.values())
+
+    # Fix files if requested (only files under target path)
     fixed_files: dict[Path, int] = {}
     if fix:
-        for file_path, unused in result.unused_imports.items():
+        for file_path, unused in filtered_unused.items():
             count = _fix_file_silent(file_path, unused)
             if count > 0:
                 fixed_files[file_path] = count
