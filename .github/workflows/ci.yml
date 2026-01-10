@@ -24,8 +24,8 @@ jobs:
         os:
           - ubuntu-latest # x64
           - windows-latest # x64
-          - macos-13 # Intel x64
-          - macos-14 # Apple Silicon ARM64
+          - macos-15-large # Intel x64
+          - macos-latest # Apple Silicon ARM64
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
