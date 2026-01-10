@@ -20,21 +20,34 @@ x: List[int] = []
 
 ---
 
-## New CLI Interface
+## CLI Interface
 
 ```bash
-# Cross-file mode (new)
-remove-unused-imports --entry-point main.py
+# Entry point mode: follow imports from a single file
+remove-unused-imports main.py
+remove-unused-imports main.py --fix
 
-# With options
-remove-unused-imports --entry-point main.py --source-root src/
-remove-unused-imports --entry-point main.py --fix
-remove-unused-imports --entry-point main.py --warn-implicit-reexports
-
-# Single-file mode (existing, unchanged)
-remove-unused-imports myfile.py
+# Whole project mode: analyze all files in directory
 remove-unused-imports src/
+remove-unused-imports src/ --fix
+
+# Options
+remove-unused-imports main.py --warn-implicit-reexports
+remove-unused-imports main.py --warn-circular
+remove-unused-imports src/ --quiet
 ```
+
+**Optional warnings:**
+- `--warn-implicit-reexports`: Flag imports used by other files but not in `__all__`
+- `--warn-circular`: Report circular import chains (e.g., `a.py → b.py → c.py → a.py`)
+
+**Two modes (auto-detected):**
+1. **Entry point mode** (file argument): Start from that file, follow imports recursively
+2. **Whole project mode** (directory argument): Build complete import graph of all `.py` files
+
+**Path resolution:** Works exactly like `python main.py`:
+- Entry point's parent directory is the source root (like `sys.path[0]`)
+- Respects `PYTHONPATH` environment variable if set
 
 ---
 
@@ -120,21 +133,22 @@ class ImplicitReexport:
 ### `_resolution.py` - Module Resolution
 
 ```python
-class ProjectContext:
-    root_path: Path
-    source_roots: list[Path]
-    external_modules: set[str]  # stdlib + installed packages
-
 class ModuleResolver:
+    def __init__(self, entry_point: Path):
+        self.source_root = entry_point.parent  # Like sys.path[0]
+        self.pythonpath = self._parse_pythonpath()  # From env var
+        self.external_modules = self._get_external_modules()
+
     def resolve_import(self, module: str, from_file: Path, level: int) -> Path | None
     def is_external(self, module: str) -> bool
     def get_module_name(self, file_path: Path) -> str
 ```
 
-**Resolution Algorithm:**
-1. Relative imports: Calculate package path, apply level (dots), search for .py or __init__.py
-2. Absolute imports: Check external modules first, then search source roots
-3. Packages: Resolve to `__init__.py`
+**Resolution Algorithm (mirrors Python):**
+1. Relative imports: Calculate package path from importing file, apply level (dots)
+2. Absolute imports: Search source_root first, then PYTHONPATH entries
+3. Check if external (stdlib/installed) before searching
+4. Packages: Resolve to `__init__.py`
 
 ### `_graph.py` - Import Graph
 
@@ -182,18 +196,20 @@ class CrossFileAutofix:
 | File | Action | Description |
 |------|--------|-------------|
 | `_data.py` | Modify | Add `ModuleInfo`, `ImportEdge`, `ImplicitReexport` |
-| `_resolution.py` | Create | Module resolver, external module detection |
+| `_resolution.py` | Create | Module resolver (mirrors Python's path resolution) |
 | `_graph.py` | Create | Import graph, graph builder |
 | `_cross_file.py` | Create | Cross-file analyzer, safe autofix |
 | `_ast_helpers.py` | Modify | Add `level` to ImportExtractor, add `DefinitionCollector` |
-| `_main.py` | Modify | Add `--entry-point`, `--source-root`, cross-file mode |
+| `_main.py` | Modify | Replace single-file logic with cross-file analysis |
 
 ---
 
 ## Implementation Phases
 
 ### Phase 1: Module Resolution
-- Implement `ProjectContext` and `ModuleResolver`
+- Implement `ModuleResolver` (mirrors Python's import system)
+- Use entry point's parent as source root (like `sys.path[0]`)
+- Parse `PYTHONPATH` environment variable
 - Handle relative imports (`from . import x`, `from ..parent import y`)
 - Detect external modules using `sys.stdlib_module_names` + `importlib.metadata`
 - **Test:** Resolution of various import patterns
@@ -212,8 +228,8 @@ class CrossFileAutofix:
 - **Test:** Multi-file unused detection, re-export scenarios
 
 ### Phase 4: CLI Integration
-- Add new CLI arguments
-- Implement `main_cross_file()`
+- Update `main()` to use cross-file analysis by default
+- Auto-detect entry point mode (file) vs whole project mode (directory)
 - Output formatting for cross-file results
 - **Test:** End-to-end CLI tests
 
