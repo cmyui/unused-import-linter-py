@@ -84,7 +84,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/cmyui/import-analyzer-py
-    rev: v0.1.4 # or latest version
+    rev: v0.1.5 # or latest version
     hooks:
       # Cross-file analysis (recommended) - analyzes entire project
       - id: import-analyzer
