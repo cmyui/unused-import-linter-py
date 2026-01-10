@@ -4,6 +4,37 @@
 
 A Python linter that detects and automatically removes unused imports.
 
+## Comparison with Other Tools
+
+| Feature | remove-unused-imports | [Ruff] | [Autoflake] | [Flake8]/[Pyflakes] | [Pylint] |
+|---------|:---------------------:|:------:|:-----------:|:-------------------:|:--------:|
+| Detect unused imports | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Autofix | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Cross-file analysis** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Re-export tracking** | ✅ | ⚠️¹ | ❌ | ❌ | ⚠️² |
+| **Cascade detection** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Circular import warnings** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Unreachable file warnings** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Respects `__all__` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| noqa: F401 support | ✅ | ✅ | ✅ | ✅ | ✅³ |
+| Full scope analysis (LEGB) | ✅ | ✅ | ⚠️⁴ | ⚠️⁴ | ✅ |
+| String annotations | ✅ | ✅ | ✅ | ✅ | ✅ |
+| TYPE_CHECKING blocks | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Speed | Moderate | 🚀 Fast | Moderate | Fast | Slow |
+
+<sup>¹ Ruff suggests redundant aliases (`import X as X`) for `__init__.py` re-exports but doesn't track cross-file usage</sup><br>
+<sup>² Pylint skips `__init__.py` by default but doesn't track actual re-export usage</sup><br>
+<sup>³ Pylint uses `# pylint: disable=unused-import`</sup><br>
+<sup>⁴ Autoflake/Pyflakes use basic scope analysis without full LEGB handling</sup>
+
+**Key differentiator**: This tool is the only one that performs **cross-file analysis** — it follows imports from your entry point and tracks which imports are actually used by other files. This prevents false positives when imports are re-exported, and enables **cascade detection** (finding imports that become unused when other unused imports are removed).
+
+[Ruff]: https://docs.astral.sh/ruff/rules/unused-import/
+[Autoflake]: https://github.com/PyCQA/autoflake
+[Flake8]: https://flake8.pycqa.org/
+[Pyflakes]: https://github.com/PyCQA/pyflakes
+[Pylint]: https://pylint.readthedocs.io/en/latest/user_guide/messages/warning/unused-import.html
+
 ## Installation
 
 ```bash
