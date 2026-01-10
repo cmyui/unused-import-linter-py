@@ -249,7 +249,7 @@ def _fix_indirect_imports(
         if file_path in attrs_by_file:
             file_attrs = attrs_by_file[file_path]
             new_source = fix_indirect_attr_accesses(
-                new_source, file_attrs, module_names
+                new_source, file_attrs, module_names,
             )
             fix_count += len(file_attrs)
 
