@@ -94,10 +94,12 @@ import_analyzer/
 **`_cross_file.py`**: Cross-file analysis:
 - `CrossFileAnalyzer`: Main analyzer class
 - `CrossFileResult`: Results (unused_imports, implicit_reexports, circular_imports, unreachable_files)
+- **`__all__` as usage**: Imports listed in `__all__` are always considered "used" (public API). This matches flake8/ruff/autoflake behavior. No cascade detection through `__all__`.
 - **Cascade detection**: Iterates until stable to find all unused imports in one pass
   - When import A is unused, check if B's import (re-exported to A) is now unused
   - Tracks file reachability: imports from unreachable files don't count as consumers
   - Continues until no new unused imports are found
+  - Exception: `__init__.py` files without `__all__` have implicit re-exports that can cascade
 - **Unreachable file detection**: Two concepts tracked separately:
   - "Potentially unreachable" (no direct edges): Used internally for cascade
   - "Truly unreachable" (no edges AND no reachable ancestors): Reported to user
