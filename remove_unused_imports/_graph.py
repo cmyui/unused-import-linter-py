@@ -13,6 +13,42 @@ from remove_unused_imports._data import ImportInfo
 from remove_unused_imports._data import ModuleInfo
 from remove_unused_imports._resolution import ModuleResolver
 
+# Directories to skip when scanning for Python files
+_SKIP_DIRS = frozenset({
+    ".venv",
+    "venv",
+    ".env",
+    "env",
+    "__pycache__",
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    ".tox",
+    ".nox",
+    ".eggs",
+    "*.egg-info",
+    "build",
+    "dist",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+})
+
+
+def _should_skip_path(path: Path) -> bool:
+    """Check if a path should be skipped during analysis."""
+    parts = path.parts
+    for skip_pattern in _SKIP_DIRS:
+        if skip_pattern.startswith("*"):
+            # Glob pattern like *.egg-info
+            suffix = skip_pattern[1:]
+            if any(part.endswith(suffix) for part in parts):
+                return True
+        elif skip_pattern in parts:
+            return True
+    return False
+
 
 class ImportGraph:
     """A graph representing import relationships between modules."""
@@ -238,8 +274,10 @@ class GraphBuilder:
         """
         directory = directory.resolve()
 
-        # Find all Python files
+        # Find all Python files, skipping common non-source directories
         for py_file in directory.rglob("*.py"):
+            if _should_skip_path(py_file):
+                continue
             if py_file not in self._visited:
                 self._process_file(py_file)
 
@@ -252,6 +290,10 @@ class GraphBuilder:
         if file_path in self._visited:
             return
         self._visited.add(file_path)
+
+        # Skip files in common non-source directories
+        if _should_skip_path(file_path):
+            return
 
         # Read and parse the file
         try:
