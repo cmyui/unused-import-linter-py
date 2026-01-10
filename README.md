@@ -6,34 +6,57 @@ A Python linter that detects and automatically removes unused imports.
 
 ## Comparison with Other Tools
 
-| Feature | remove-unused-imports | [Ruff] | [Autoflake] | [Flake8]/[Pyflakes] | [Pylint] |
-|---------|:---------------------:|:------:|:-----------:|:-------------------:|:--------:|
-| Detect unused imports | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Autofix | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **Cross-file analysis** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Re-export tracking** | ✅ | ⚠️¹ | ❌ | ❌ | ⚠️² |
-| **Cascade detection** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Circular import warnings** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Unreachable file warnings** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Respects `__all__` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| noqa: F401 support | ✅ | ✅ | ✅ | ✅ | ✅³ |
-| Full scope analysis (LEGB) | ✅ | ✅ | ⚠️⁴ | ⚠️⁴ | ✅ |
-| String annotations | ✅ | ✅ | ✅ | ✅ | ✅ |
-| TYPE_CHECKING blocks | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Speed | Moderate | 🚀 Fast | Moderate | Fast | Slow |
+| Feature | This tool | [Ruff] | [Autoflake] | [Pyflakes] | [Pylint] | [Unimport] |
+|---------|:---------:|:------:|:-----------:|:----------:|:--------:|:----------:|
+| Detect unused imports | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Autofix | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| **Cross-file analysis** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Re-export tracking** | ✅ | ❌¹ | ❌ | ❌ | ❌² | ❌ |
+| **Cascade detection** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Circular import warnings** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Unreachable file warnings** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Respects `__all__` | ✅ | ✅ | ⚠️³ | ✅ | ✅ | ✅ |
+| noqa: F401 support | ✅ | ✅ | ✅ | ❌⁴ | ✅⁵ | ✅ |
+| Full scope analysis (LEGB) | ✅ | ✅ | ⚠️⁶ | ⚠️⁶ | ✅ | ✅ |
+| String annotations | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| TYPE_CHECKING blocks | ✅ | ✅ | ✅ | ⚠️⁷ | ✅ | ✅ |
+| Type comments (`# type:`) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Redundant alias (`x as x`) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Star import suggestions | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Redefinition warnings | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Speed | Moderate | 🚀 Fast | Moderate | Fast | Slow | Moderate |
 
-<sup>¹ Ruff suggests redundant aliases (`import X as X`) for `__init__.py` re-exports but doesn't track cross-file usage</sup><br>
-<sup>² Pylint skips `__init__.py` by default but doesn't track actual re-export usage</sup><br>
-<sup>³ Pylint uses `# pylint: disable=unused-import`</sup><br>
-<sup>⁴ Autoflake/Pyflakes use basic scope analysis without full LEGB handling</sup>
+<sup>¹ Ruff suggests `import X as X` for `__init__.py` but doesn't track actual cross-file usage</sup><br>
+<sup>² Pylint skips `__init__.py` by default but doesn't track actual re-export consumers</sup><br>
+<sup>³ Autoflake only uses `__all__` to skip star import expansion, not to preserve re-exports</sup><br>
+<sup>⁴ Pyflakes has no noqa support; Flake8 adds it as a wrapper layer</sup><br>
+<sup>⁵ Pylint uses `# pylint: disable=unused-import`</sup><br>
+<sup>⁶ Autoflake/Pyflakes have basic scope analysis but miss some LEGB edge cases</sup><br>
+<sup>⁷ Pyflakes treats TYPE_CHECKING as normal conditional code (works but not explicit)</sup>
 
-**Key differentiator**: This tool is the only one that performs **cross-file analysis** — it follows imports from your entry point and tracks which imports are actually used by other files. This prevents false positives when imports are re-exported, and enables **cascade detection** (finding imports that become unused when other unused imports are removed).
+### What makes this tool unique
+
+**Cross-file analysis** — This is the only tool that follows imports from your entry point and tracks which imports are actually used by other files. This enables:
+
+- **Re-export preservation**: If `utils.py` imports `List` and `main.py` does `from utils import List`, the import in `utils.py` is correctly identified as used
+- **Cascade detection**: When removing an unused import makes another import unused, this tool finds all of them in a single pass
+- **Circular import detection**: Warns about import cycles in your codebase
+- **Unreachable file detection**: Identifies files that become dead code after fixing imports
+
+### Features we don't have (yet)
+
+Based on analysis of other tools' source code:
+
+- **Type comments**: `# type: int` style annotations (PEP 484) are not parsed
+- **Redundant alias detection**: `import X as X` as explicit re-export marker (Ruff feature)
+- **Star import suggestions**: Suggesting specific names to replace `from x import *` (Unimport feature)
+- **Redefinition warnings**: Warning when an import is reassigned before use (Pyflakes feature)
 
 [Ruff]: https://docs.astral.sh/ruff/rules/unused-import/
 [Autoflake]: https://github.com/PyCQA/autoflake
-[Flake8]: https://flake8.pycqa.org/
 [Pyflakes]: https://github.com/PyCQA/pyflakes
 [Pylint]: https://pylint.readthedocs.io/en/latest/user_guide/messages/warning/unused-import.html
+[Unimport]: https://github.com/hakancelikdev/unimport
 
 ## Installation
 
