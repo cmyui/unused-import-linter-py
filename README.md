@@ -6,25 +6,25 @@ A Python import analyzer with cross-file analysis, unused import detection, circ
 
 ## Comparison with Other Tools
 
-| Feature | This tool | [Ruff] | [Autoflake] | [Pyflakes] | [Pylint] | [Unimport] |
-|---------|:---------:|:------:|:-----------:|:----------:|:--------:|:----------:|
-| Detect unused imports | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Autofix | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
-| **Cross-file analysis** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Re-export tracking** | ✅ | ❌¹ | ❌ | ❌ | ❌² | ❌ |
-| **Cascade detection** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Circular import warnings** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Unreachable file warnings** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Respects `__all__` | ✅ | ✅ | ⚠️³ | ✅ | ✅ | ✅ |
-| noqa: F401 support | ✅ | ✅ | ✅ | ❌⁴ | ✅⁵ | ✅ |
-| Full scope analysis (LEGB) | ✅ | ✅ | ⚠️⁶ | ⚠️⁶ | ✅ | ✅ |
-| String annotations | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| TYPE_CHECKING blocks | ✅ | ✅ | ✅ | ⚠️⁷ | ✅ | ✅ |
-| Type comments (`# type:`) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Redundant alias (`x as x`) | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Star import suggestions | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Redefinition warnings | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| Speed | Moderate | 🚀 Fast | Moderate | Fast | Slow | Moderate |
+| Feature                       | This tool | [Ruff]  | [Autoflake] | [Pyflakes] | [Pylint] | [Unimport] |
+| ----------------------------- | :-------: | :-----: | :---------: | :--------: | :------: | :--------: |
+| Detect unused imports         |    ✅     |   ✅    |     ✅      |     ✅     |    ✅    |     ✅     |
+| Autofix                       |    ✅     |   ✅    |     ✅      |     ❌     |    ❌    |     ✅     |
+| **Cross-file analysis**       |    ✅     |   ❌    |     ❌      |     ❌     |    ❌    |     ❌     |
+| **Re-export tracking**        |    ✅     |   ❌¹   |     ❌      |     ❌     |   ❌²    |     ❌     |
+| **Cascade detection**         |    ✅     |   ❌    |     ❌      |     ❌     |    ❌    |     ❌     |
+| **Circular import warnings**  |    ✅     |   ❌    |     ❌      |     ❌     |    ❌    |     ❌     |
+| **Unreachable file warnings** |    ✅     |   ❌    |     ❌      |     ❌     |    ❌    |     ❌     |
+| Respects `__all__`            |    ✅     |   ✅    |     ⚠️³     |     ✅     |    ✅    |     ✅     |
+| noqa: F401 support            |    ✅     |   ✅    |     ✅      |    ❌⁴     |   ✅⁵    |     ✅     |
+| Full scope analysis (LEGB)    |    ✅     |   ✅    |     ⚠️⁶     |    ⚠️⁶     |    ✅    |     ✅     |
+| String annotations            |    ✅     |   ✅    |     ✅      |     ✅     |    ✅    |     ✅     |
+| TYPE_CHECKING blocks          |    ✅     |   ✅    |     ✅      |    ⚠️⁷     |    ✅    |     ✅     |
+| Type comments (`# type:`)     |    ❌     |   ✅    |     ✅      |     ✅     |    ✅    |     ✅     |
+| Redundant alias (`x as x`)    |    ❌     |   ✅    |     ❌      |     ❌     |    ❌    |     ❌     |
+| Star import suggestions       |    ❌     |   ❌    |     ❌      |     ❌     |    ❌    |     ✅     |
+| Redefinition warnings         |    ❌     |   ✅    |     ❌      |     ✅     |    ✅    |     ❌     |
+| Speed                         | Moderate  | 🚀 Fast |  Moderate   |    Fast    |   Slow   |  Moderate  |
 
 <sup>¹ Ruff suggests `import X as X` for `__init__.py` but doesn't track actual cross-file usage</sup><br>
 <sup>² Pylint skips `__init__.py` by default but doesn't track actual re-export consumers</sup><br>
@@ -61,7 +61,7 @@ Based on analysis of other tools' source code:
 ## Installation
 
 ```bash
-pip install import-analyzer
+pip install import-analyzer-py
 ```
 
 Or install from source:
@@ -151,6 +151,7 @@ import-analyzer --single-file src/*.py
 ### Directory exclusions
 
 The tool automatically skips common non-source directories:
+
 - Virtual environments: `.venv`, `venv`, `.env`, `env`
 - Build artifacts: `build`, `dist`, `*.egg-info`
 - Cache directories: `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`
@@ -169,6 +170,7 @@ The tool automatically skips common non-source directories:
 ### Single-file example
 
 Before:
+
 ```python
 import os
 import sys  # unused
@@ -180,6 +182,7 @@ def get_home() -> Optional[Path]:
 ```
 
 After (`--fix`):
+
 ```python
 import os
 from typing import Optional
