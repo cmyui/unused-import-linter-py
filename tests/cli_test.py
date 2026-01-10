@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from remove_unused_imports._main import check_cross_file
 from remove_unused_imports._main import check_file
 from remove_unused_imports._main import collect_python_files
 from remove_unused_imports._main import main
@@ -205,3 +206,240 @@ def test_cli_subprocess(tmp_path):
 
     assert result.returncode == 1
     assert "Unused import 'os'" in result.stdout
+
+
+# =============================================================================
+# Cross-file mode: check_cross_file function tests
+# =============================================================================
+
+
+def test_cross_file_reexport_not_unused(tmp_path):
+    """Re-exported imports should not be marked as unused."""
+    # main.py imports List from utils
+    (tmp_path / "main.py").write_text(
+        "from utils import List\nx: List[int] = []\n",
+    )
+    # utils.py imports List from typing and re-exports it
+    (tmp_path / "utils.py").write_text(
+        "from typing import List, Dict  # Dict is unused\n",
+    )
+
+    count, messages = check_cross_file(tmp_path / "main.py")
+
+    # Only Dict should be unused, not List
+    assert count == 1
+    message_text = " ".join(messages)
+    assert "Dict" in message_text
+    assert "List" not in message_text or "Implicit" in message_text
+
+
+def test_cross_file_fix_preserves_reexports(tmp_path):
+    """--fix should preserve re-exported imports."""
+    (tmp_path / "main.py").write_text(
+        "from utils import List\nx: List[int] = []\n",
+    )
+    (tmp_path / "utils.py").write_text(
+        "from typing import List, Dict\n",
+    )
+
+    check_cross_file(tmp_path / "main.py", fix=True)
+
+    # List should be preserved (re-exported), Dict removed
+    utils_content = (tmp_path / "utils.py").read_text()
+    assert "List" in utils_content
+    assert "Dict" not in utils_content
+
+
+def test_cross_file_warn_implicit_reexports(tmp_path):
+    """--warn-implicit-reexports should warn about re-exports not in __all__."""
+    (tmp_path / "main.py").write_text(
+        "from utils import List\nx: List[int] = []\n",
+    )
+    (tmp_path / "utils.py").write_text("from typing import List\n")
+
+    count, messages = check_cross_file(
+        tmp_path / "main.py", warn_implicit_reexports=True,
+    )
+
+    message_text = " ".join(messages)
+    assert "Implicit re-export" in message_text
+    assert "List" in message_text
+
+
+def test_cross_file_warn_circular(tmp_path):
+    """--warn-circular should report circular imports."""
+    (tmp_path / "a.py").write_text("from b import x\ny = 1\n")
+    (tmp_path / "b.py").write_text("from a import y\nx = 2\n")
+
+    count, messages = check_cross_file(tmp_path / "a.py", warn_circular=True)
+
+    message_text = " ".join(messages)
+    assert "Circular import" in message_text
+
+
+def test_cross_file_directory_mode(tmp_path):
+    """Directory mode should analyze all files."""
+    subdir = tmp_path / "pkg"
+    subdir.mkdir()
+    (subdir / "__init__.py").write_text("")
+    (subdir / "module.py").write_text("import os\n")
+
+    count, messages = check_cross_file(tmp_path)
+
+    assert count == 1
+    message_text = " ".join(messages)
+    assert "os" in message_text
+
+
+# =============================================================================
+# Cross-file mode: main() CLI tests
+# =============================================================================
+
+
+def test_main_cross_file_nonexistent(tmp_path, monkeypatch, capsys):
+    """Cross-file mode should error on non-existent path."""
+    monkeypatch.setattr(
+        sys, 'argv', ['prog', str(tmp_path / 'nonexistent')],
+    )
+
+    result = main()
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "Path not found" in captured.err
+
+
+def test_main_cross_file_multiple_paths_error(tmp_path, monkeypatch, capsys):
+    """Cross-file mode should error with multiple paths."""
+    file1 = tmp_path / "a.py"
+    file2 = tmp_path / "b.py"
+    file1.write_text("")
+    file2.write_text("")
+
+    monkeypatch.setattr(sys, 'argv', ['prog', str(file1), str(file2)])
+
+    result = main()
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "single entry point" in captured.err
+
+
+def test_main_cross_file_with_warn_implicit_reexports(tmp_path, monkeypatch, capsys):
+    """Test --warn-implicit-reexports flag via CLI."""
+    (tmp_path / "main.py").write_text(
+        "from utils import List\nx: List[int] = []\n",
+    )
+    (tmp_path / "utils.py").write_text("from typing import List\n")
+
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        ['prog', '--warn-implicit-reexports', str(tmp_path / "main.py")],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "Implicit re-export" in captured.out
+
+
+def test_main_cross_file_with_warn_circular(tmp_path, monkeypatch, capsys):
+    """Test --warn-circular flag via CLI."""
+    (tmp_path / "a.py").write_text("from b import x\ny = 1\n")
+    (tmp_path / "b.py").write_text("from a import y\nx = 2\n")
+
+    monkeypatch.setattr(
+        sys, 'argv', ['prog', '--warn-circular', str(tmp_path / "a.py")],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "Circular import" in captured.out
+
+
+def test_main_cross_file_fix(tmp_path, monkeypatch, capsys):
+    """Test --fix in cross-file mode."""
+    (tmp_path / "main.py").write_text(
+        "from utils import List\nx: List[int] = []\n",
+    )
+    (tmp_path / "utils.py").write_text("from typing import List, Dict\n")
+
+    monkeypatch.setattr(
+        sys, 'argv', ['prog', '--fix', str(tmp_path / "main.py")],
+    )
+
+    result = main()
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "Fixed" in captured.out
+
+    # Verify Dict was removed but List preserved
+    utils_content = (tmp_path / "utils.py").read_text()
+    assert "List" in utils_content
+    assert "Dict" not in utils_content
+
+
+def test_main_cross_file_quiet(tmp_path, monkeypatch, capsys):
+    """Test --quiet in cross-file mode."""
+    (tmp_path / "main.py").write_text("import os\n")
+
+    monkeypatch.setattr(
+        sys, 'argv', ['prog', '-q', str(tmp_path / "main.py")],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    # Individual issues not shown
+    assert "Unused import 'os'" not in captured.out
+    # Summary shown
+    assert "Found 1 unused import(s)" in captured.out
+
+
+# =============================================================================
+# Cross-file mode: edge cases
+# =============================================================================
+
+
+def test_cross_file_syntax_error_in_imported_file(tmp_path):
+    """Should handle syntax errors in imported files gracefully."""
+    (tmp_path / "main.py").write_text("import broken\n")
+    (tmp_path / "broken.py").write_text("def invalid syntax\n")
+
+    # Should not raise, but may not detect the import as resolved
+    count, messages = check_cross_file(tmp_path / "main.py")
+    # The behavior is that broken.py won't be parsed, so import won't resolve
+    # main.py's import of 'broken' will be seen as unused (can't resolve)
+    assert count >= 0  # Just ensure no crash
+
+
+def test_cross_file_empty_project(tmp_path):
+    """Should handle empty files."""
+    (tmp_path / "main.py").write_text("")
+
+    count, messages = check_cross_file(tmp_path / "main.py")
+
+    assert count == 0
+    assert len(messages) == 0
+
+
+def test_cross_file_nested_directories(tmp_path):
+    """Directory mode should find files in nested directories."""
+    pkg = tmp_path / "pkg"
+    sub = pkg / "subpkg"
+    sub.mkdir(parents=True)
+
+    (pkg / "__init__.py").write_text("")
+    (pkg / "module.py").write_text("import os\n")
+    (sub / "__init__.py").write_text("")
+    (sub / "deep.py").write_text("import sys\n")
+
+    count, messages = check_cross_file(tmp_path)
+
+    assert count == 2  # os and sys
+    message_text = " ".join(messages)
+    assert "os" in message_text
+    assert "sys" in message_text
