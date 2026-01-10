@@ -5,7 +5,7 @@
 <!-- How was this tested? -->
 
 ## Checklist
-- [ ] Tests pass (`pytest tests/ -v`)
+- [ ] Added test coverage for code changes
 - [ ] Pre-commit hooks pass (`pre-commit run --all-files`)
 
 Closes #<!-- issue number -->
