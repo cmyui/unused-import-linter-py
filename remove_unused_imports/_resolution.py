@@ -8,14 +8,27 @@ from pathlib import Path
 
 
 def get_external_modules() -> set[str]:
-    """Get set of known external (stdlib + installed) module names."""
+    """Get set of known external (stdlib + installed) module names.
+
+    Uses multiple strategies to build a comprehensive list:
+    1. sys.stdlib_module_names (Python 3.10+) - authoritative list
+    2. Filesystem scan of stdlib directory (fallback for older Python)
+    3. Hardcoded list of common modules (catches built-in modules compiled
+       into the interpreter that don't exist as files, e.g., sys, builtins)
+    4. Installed packages from importlib.metadata
+    """
     external: set[str] = set()
 
-    # Standard library modules (Python 3.10+)
+    # Strategy 1: sys.stdlib_module_names (Python 3.10+)
+    # This is the authoritative source when available
     if hasattr(sys, "stdlib_module_names"):
         external.update(sys.stdlib_module_names)
     else:
-        # Fallback for Python < 3.10
+        # Strategy 2: Filesystem scan (fallback for Python < 3.10)
+        # Note: This only finds modules that exist as files/packages in the
+        # stdlib directory. Built-in modules compiled into the interpreter
+        # (like sys, builtins) won't be found here - they're handled by
+        # the hardcoded list below.
         import sysconfig
 
         stdlib_path = Path(sysconfig.get_path("stdlib"))
@@ -26,7 +39,11 @@ def get_external_modules() -> set[str]:
                 elif item.is_dir() and (item / "__init__.py").exists():
                     external.add(item.name)
 
-    # Add common built-in modules that might not be in stdlib_module_names
+    # Strategy 3: Hardcoded list of common built-in modules
+    # These modules are compiled into the Python interpreter and may not
+    # exist as separate files in the stdlib path. This list ensures they're
+    # recognized as external even on Python < 3.10 where the filesystem
+    # scan would miss them.
     external.update({
         "builtins",
         "sys",
@@ -61,7 +78,8 @@ def get_external_modules() -> set[str]:
         "typing_extensions",
     })
 
-    # Installed packages (from importlib.metadata)
+    # Strategy 4: Installed packages (from importlib.metadata)
+    # Discovers third-party packages installed in the environment
     try:
         from importlib.metadata import distributions
 
