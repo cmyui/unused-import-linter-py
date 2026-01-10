@@ -1999,3 +1999,128 @@ def test_indirect_attr_access_nested_with_file_submodule():
         assert acc.attr_path == ["internal", "LOGGER"]
         assert acc.current_source == pkg / "internal.py"
         assert acc.original_source == root / "logger.py"
+
+
+def test_fix_indirect_attr_access_with_function_local_import():
+    """Function-local imports should be fixed with module-level import added."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py has function-local import
+        (root / "app.py").write_text(
+            "def foo():\n"
+            "    import models\n"
+            "    models.LOGGER.info('hello')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify the fix
+        app_content = (root / "app.py").read_text()
+
+        # New import should be added at module level
+        assert "import logger" in app_content
+        # Usage should be rewritten
+        assert "logger.LOGGER" in app_content
+        # The import logger should be at the top (before def foo)
+        lines = app_content.splitlines()
+        import_line = next(i for i, l in enumerate(lines) if "import logger" in l)
+        def_line = next(i for i, l in enumerate(lines) if "def foo" in l)
+        assert import_line < def_line
+
+
+def test_fix_indirect_attr_with_file_containing_local_imports():
+    """Files with function-local imports should not have new imports inserted there."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # models/__init__.py re-exports LOGGER
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py has both module-level import (models) and function-local import
+        (root / "app.py").write_text(
+            "import models\n"
+            "\n"
+            "def bar():\n"
+            "    from os import path  # function-local import\n"
+            "    return path.exists('test')\n"
+            "\n"
+            "def foo():\n"
+            "    models.LOGGER.info('hello')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify the fix
+        app_content = (root / "app.py").read_text()
+        lines = app_content.splitlines()
+
+        # New import should be at module level, not inside bar()
+        # Find where "import logger" is
+        import_logger_line = next(
+            (i for i, l in enumerate(lines) if l.strip() == "import logger"),
+            None,
+        )
+        assert import_logger_line is not None
+
+        # It should be near the top (before any function definitions)
+        def_bar_line = next(i for i, l in enumerate(lines) if "def bar" in l)
+        assert import_logger_line < def_bar_line
+
+
+def test_fix_indirect_imports_with_split_imports():
+    """When fixing from-imports that split lines, attr fixes should still work."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # extensions.py defines db
+        (root / "extensions.py").write_text("db = 'database'\n")
+
+        # models/__init__.py re-exports both
+        models = root / "models"
+        models.mkdir()
+        (models / "__init__.py").write_text(
+            "from logger import LOGGER\n" "from extensions import db\n",
+        )
+
+        # app.py imports both on one line and uses both
+        (root / "app.py").write_text(
+            "from models import LOGGER, db\n"
+            "\n"
+            "import models\n"
+            "\n"
+            "def foo():\n"
+            "    models.LOGGER.info('hello')\n"
+            "    return db\n",
+        )
+
+        # Run fix - this tests that attr fixes work even when import fixes
+        # split lines (changing line numbers)
+        check_cross_file(root / "app.py", fix_indirect=True, strict_indirect_imports=True)
+
+        # Verify syntax is valid
+        app_content = (root / "app.py").read_text()
+        import ast
+
+        ast.parse(app_content)  # Should not raise
+
+        # Verify the attr access was fixed
+        assert "logger.LOGGER" in app_content
