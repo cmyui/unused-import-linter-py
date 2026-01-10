@@ -6,8 +6,12 @@ from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
+import ast
+
+from import_analyzer._ast_helpers import AttributeAccessCollector
 from import_analyzer._data import ImplicitReexport
 from import_analyzer._data import ImportInfo
+from import_analyzer._data import IndirectAttributeAccess
 from import_analyzer._data import IndirectImport
 from import_analyzer._detection import find_unused_imports
 from import_analyzer._graph import ImportGraph
@@ -25,6 +29,9 @@ class CrossFileResult:
 
     # Imports going through re-exporters instead of direct sources
     indirect_imports: list[IndirectImport] = field(default_factory=list)
+
+    # Attribute accesses going through re-exporters (e.g., models.LOGGER)
+    indirect_attr_accesses: list[IndirectAttributeAccess] = field(default_factory=list)
 
     # External module usage across the project: module -> files using it
     external_usage: dict[str, set[Path]] = field(default_factory=dict)
@@ -156,6 +163,9 @@ class CrossFileAnalyzer:
 
         # Step 9: Find indirect imports (imports through re-exporters)
         result.indirect_imports = self._find_indirect_imports()
+
+        # Step 10: Find indirect attribute accesses (module.attr through re-exporters)
+        result.indirect_attr_accesses = self._find_indirect_attr_accesses()
 
         return result
 
@@ -553,6 +563,100 @@ class CrossFileAnalyzer:
             return True
         except ValueError:
             return False
+
+    def _find_indirect_attr_accesses(self) -> list[IndirectAttributeAccess]:
+        """Find attribute accesses that go through re-exporters.
+
+        For each 'import module' statement followed by 'module.attr':
+        1. Check if attr is defined in module or re-exported
+        2. If re-exported, trace to the original source
+        3. Group usages by original source for efficient rewriting
+        """
+        results: list[IndirectAttributeAccess] = []
+
+        for file_path, module_info in self.graph.nodes.items():
+            # Find 'import X' or 'import X as Y' style imports
+            # imp.name = bound name (alias if present), imp.original_name = actual module
+            module_imports: dict[str, ImportInfo] = {}
+            for imp in module_info.imports:
+                if not imp.is_from_import:
+                    module_imports[imp.name] = imp
+
+            if not module_imports:
+                continue
+
+            # Parse file and collect attribute usages
+            try:
+                source = file_path.read_text(encoding="utf-8")
+                tree = ast.parse(source)
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                continue
+
+            collector = AttributeAccessCollector(set(module_imports.keys()))
+            collector.visit(tree)
+
+            # For each alias.attr (or module.attr), check if attr is re-exported
+            for bound_name, usages in collector.usages.items():
+                if not usages:
+                    continue
+
+                imp = module_imports[bound_name]
+
+                # Find the resolved module file using original module name
+                for edge in self.graph.get_imports(file_path):
+                    if edge.module_name == imp.original_name and edge.imported:
+                        imported_module = self.graph.nodes.get(edge.imported)
+                        if not imported_module:
+                            continue
+
+                        # Group usages by attr name
+                        by_attr: dict[str, list[tuple[int, int]]] = defaultdict(list)
+                        for u in usages:
+                            by_attr[u.attr_name].append((u.lineno, u.col_offset))
+
+                        for attr_name, usage_locs in by_attr.items():
+                            # Is attr defined in the imported module?
+                            if attr_name in imported_module.defined_names:
+                                continue  # Direct, skip
+
+                            # Trace to original source
+                            trace_result = self._trace_import_source(
+                                edge.imported,
+                                attr_name,
+                            )
+                            if trace_result is None:
+                                continue
+                            original_source, original_name = trace_result
+                            if original_source == edge.imported:
+                                continue  # Already at source
+
+                            # Check same-package re-export
+                            is_same_pkg = self._is_same_package_reexport(
+                                edge.imported,
+                                original_source,
+                            )
+
+                            if is_same_pkg and not self.include_same_package_indirect:
+                                continue
+
+                            results.append(
+                                IndirectAttributeAccess(
+                                    file=file_path,
+                                    import_name=bound_name,
+                                    import_lineno=imp.lineno,
+                                    attr_name=attr_name,
+                                    original_name=original_name,
+                                    usages=usage_locs,
+                                    current_source=edge.imported,
+                                    original_source=original_source,
+                                    is_same_package=is_same_pkg,
+                                ),
+                            )
+                        break
+
+        # Sort by file, then line number, then attr name for consistent output
+        results.sort(key=lambda x: (x.file, x.import_lineno, x.attr_name))
+        return results
 
     def _find_import_lineno(
         self,

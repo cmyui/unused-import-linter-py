@@ -96,6 +96,37 @@ class IndirectImport:
     is_same_package: bool  # True if re-exporter is __init__.py of original's package
 
 
+@dataclass
+class IndirectAttributeAccess:
+    """Attribute access through a re-exporter instead of the source.
+
+    Example:
+        # logger.py
+        LOGGER = Logger()  # Original definition
+
+        # models/__init__.py
+        from logger import LOGGER  # Re-exports LOGGER
+
+        # app.py (INDIRECT - this is what we detect)
+        import models
+        models.LOGGER.info("hello")  # Accessing via re-exporter
+
+        # app.py (DIRECT - what it should be)
+        import logger
+        logger.LOGGER.info("hello")  # Accessing via source
+    """
+
+    file: Path  # File with the indirect access
+    import_name: str  # Bound name of the imported module (e.g., "models" or alias "m")
+    import_lineno: int  # Line number of the import statement
+    attr_name: str  # Attribute being accessed (e.g., "LOGGER")
+    original_name: str  # Name as defined in original_source (may differ if aliased)
+    usages: list[tuple[int, int]]  # List of (lineno, col_offset) for each usage
+    current_source: Path  # Where it's imported from (re-exporter)
+    original_source: Path  # Where it's actually defined
+    is_same_package: bool  # True if re-exporter is __init__.py of original's package
+
+
 def is_under_path(file_path: Path, base_path: Path) -> bool:
     """Check if a file is under the base path."""
     try:

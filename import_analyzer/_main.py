@@ -5,10 +5,12 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from import_analyzer._autofix import fix_indirect_attr_accesses
 from import_analyzer._autofix import fix_indirect_imports
 from import_analyzer._autofix import remove_unused_imports
 from import_analyzer._cross_file import analyze_cross_file
 from import_analyzer._data import ImportInfo
+from import_analyzer._data import IndirectAttributeAccess
 from import_analyzer._data import IndirectImport
 from import_analyzer._data import is_under_path
 from import_analyzer._detection import find_unused_imports
@@ -99,9 +101,10 @@ def check_cross_file(
     # Fix indirect imports first (if requested)
     # This enables cascade: after fixing indirect imports, the re-exports become unused
     indirect_fixed_files: dict[Path, int] = {}
-    if fix_indirect and result.indirect_imports:
+    if fix_indirect and (result.indirect_imports or result.indirect_attr_accesses):
         indirect_fixed_files = _fix_indirect_imports(
             result.indirect_imports,
+            result.indirect_attr_accesses,
             graph,
             path,
         )
@@ -136,6 +139,7 @@ def check_cross_file(
         warn_implicit_reexports=warn_implicit_reexports,
         warn_circular=warn_circular,
         warn_unreachable=warn_unreachable,
+        show_indirect=fix_indirect,
         quiet=quiet,
         fixed_files=fixed_files,
     )
@@ -175,6 +179,7 @@ def _fix_file_silent(
 
 def _fix_indirect_imports(
     indirect_imports: list[IndirectImport],
+    indirect_attr_accesses: list[IndirectAttributeAccess],
     graph: ImportGraph,
     base_path: Path,
 ) -> dict[Path, int]:
@@ -182,11 +187,12 @@ def _fix_indirect_imports(
 
     Args:
         indirect_imports: List of indirect imports to fix
+        indirect_attr_accesses: List of indirect attribute accesses to fix
         graph: The import graph (for module name lookup)
         base_path: Base path for filtering (only fix files under this path)
 
     Returns:
-        Dict mapping file paths to number of imports fixed
+        Dict mapping file paths to number of imports/accesses fixed
     """
 
     # Filter to only files under base_path
@@ -198,7 +204,11 @@ def _fix_indirect_imports(
         ind for ind in indirect_imports if is_under_path(ind.file, base_path)
     ]
 
-    if not filtered_indirect:
+    filtered_attr_accesses = [
+        acc for acc in indirect_attr_accesses if is_under_path(acc.file, base_path)
+    ]
+
+    if not filtered_indirect and not filtered_attr_accesses:
         return {}
 
     # Build module name lookup from graph
@@ -207,22 +217,45 @@ def _fix_indirect_imports(
         module_names[file_path] = module_info.module_name
 
     # Group indirect imports by file
-    by_file: dict[Path, list[IndirectImport]] = defaultdict(list)
+    imports_by_file: dict[Path, list[IndirectImport]] = defaultdict(list)
     for ind in filtered_indirect:
-        by_file[ind.file].append(ind)
+        imports_by_file[ind.file].append(ind)
 
-    # Fix each file
+    # Group indirect attr accesses by file
+    attrs_by_file: dict[Path, list[IndirectAttributeAccess]] = defaultdict(list)
+    for acc in filtered_attr_accesses:
+        attrs_by_file[acc.file].append(acc)
+
+    # Fix each file (apply both fixes)
+    all_files = set(imports_by_file.keys()) | set(attrs_by_file.keys())
     fixed_files: dict[Path, int] = {}
-    for file_path, file_indirect in by_file.items():
+
+    for file_path in all_files:
         try:
             source = file_path.read_text()
         except (OSError, UnicodeDecodeError):
             continue
 
-        new_source = fix_indirect_imports(source, file_indirect, module_names)
+        new_source = source
+        fix_count = 0
+
+        # Apply indirect import fixes
+        if file_path in imports_by_file:
+            file_indirect = imports_by_file[file_path]
+            new_source = fix_indirect_imports(new_source, file_indirect, module_names)
+            fix_count += len(file_indirect)
+
+        # Apply indirect attr access fixes
+        if file_path in attrs_by_file:
+            file_attrs = attrs_by_file[file_path]
+            new_source = fix_indirect_attr_accesses(
+                new_source, file_attrs, module_names
+            )
+            fix_count += len(file_attrs)
+
         if new_source != source:
             file_path.write_text(new_source)
-            fixed_files[file_path] = len(file_indirect)
+            fixed_files[file_path] = fix_count
 
     return fixed_files
 

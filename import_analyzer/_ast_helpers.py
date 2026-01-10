@@ -606,6 +606,78 @@ class NameUsageCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+@dataclass
+class AttributeUsage:
+    """A single module.attr usage location."""
+
+    attr_name: str  # The attribute being accessed (e.g., "LOGGER")
+    lineno: int  # Line number of the usage
+    col_offset: int  # Column offset of the start of "module" or alias
+
+
+class AttributeAccessCollector(ast.NodeVisitor):
+    """Collect module.attr usages for 'import module' statements.
+
+    Given source like:
+        import models
+        models.LOGGER.info("hello")
+        models.Config.DEBUG
+
+    This collector produces:
+        {
+            "models": [
+                AttributeUsage("LOGGER", 2, 0),
+                AttributeUsage("Config", 3, 0),
+            ]
+        }
+
+    Handles aliased imports: 'import models as m' + 'm.LOGGER'
+    """
+
+    def __init__(self, module_imports: set[str]) -> None:
+        """Initialize the collector.
+
+        Args:
+            module_imports: Set of names bound by 'import X' or 'import X as Y'
+                           (the bound name, which is Y if aliased, X otherwise)
+        """
+        self.module_imports = module_imports
+        self.usages: dict[str, list[AttributeUsage]] = {}
+        for name in module_imports:
+            self.usages[name] = []
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        """Track first-level attribute access on imported modules."""
+        # Only interested in Load context (reading, not assignment to attribute)
+        if not isinstance(node.ctx, ast.Load):
+            self.generic_visit(node)
+            return
+
+        # Check if this is module.attr (not module.attr.subattr.method)
+        # We want the immediate attribute access on the module
+        if not isinstance(node.value, ast.Name):
+            self.generic_visit(node)
+            return
+
+        module_name = node.value.id
+
+        # Check if this name refers to an imported module
+        if module_name not in self.module_imports:
+            self.generic_visit(node)
+            return
+
+        # Record this usage
+        self.usages[module_name].append(
+            AttributeUsage(
+                attr_name=node.attr,
+                lineno=node.lineno,
+                col_offset=node.value.col_offset,  # Start of "module" or alias
+            ),
+        )
+
+        self.generic_visit(node)
+
+
 class StringAnnotationVisitor(ast.NodeVisitor):
     """Extract names from string annotations (forward references).
 

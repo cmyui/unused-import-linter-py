@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from import_analyzer._data import ImportInfo
+from import_analyzer._data import IndirectAttributeAccess
 from import_analyzer._data import IndirectImport
 
 
@@ -582,3 +583,93 @@ def fix_indirect_imports(
         lines = before + [new_code + "\n"] + after
 
     return "".join(lines)
+
+
+def _find_last_import_line(tree: ast.AST) -> int:
+    """Find the line number after the last import statement."""
+    last_import_line = 0
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            end_line = node.end_lineno or node.lineno
+            last_import_line = max(last_import_line, end_line)
+    return last_import_line
+
+
+def fix_indirect_attr_accesses(
+    source: str,
+    indirect_accesses: list[IndirectAttributeAccess],
+    module_names: dict[Path, str],
+) -> str:
+    """Rewrite indirect attribute accesses to use direct sources.
+
+    This involves:
+    1. Adding new import statements for original sources
+    2. Rewriting all usage sites (module.attr -> new_module.attr)
+
+    Note: Removing the now-unused original import is handled by the
+    existing unused import removal logic.
+
+    Args:
+        source: The source code to modify
+        indirect_accesses: List of indirect accesses to fix (all from same file)
+        module_names: Mapping from file paths to module names
+
+    Example:
+        Before:
+            import models
+            models.LOGGER.info("hello")
+
+        After:
+            import models
+            import logger
+            logger.LOGGER.info("hello")
+    """
+    if not indirect_accesses:
+        return source
+
+    lines = source.splitlines(keepends=True)
+
+    # Build replacements: (lineno, col_start, old_text, new_text)
+    replacements: list[tuple[int, int, str, str]] = []
+    new_imports: set[str] = set()
+
+    for acc in indirect_accesses:
+        target_module = module_names.get(acc.original_source)
+        if not target_module:
+            continue
+
+        new_imports.add(target_module)
+
+        for lineno, col_offset in acc.usages:
+            old_prefix = f"{acc.import_name}.{acc.attr_name}"
+            new_prefix = f"{target_module}.{acc.original_name}"
+            replacements.append((lineno, col_offset, old_prefix, new_prefix))
+
+    if not replacements and not new_imports:
+        return source
+
+    # Apply replacements in reverse order (bottom-up, right-to-left)
+    replacements.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+    for lineno, col_start, old_text, new_text in replacements:
+        line_idx = lineno - 1
+        if line_idx < len(lines):
+            line = lines[line_idx]
+            col_end = col_start + len(old_text)
+            lines[line_idx] = line[:col_start] + new_text + line[col_end:]
+
+    # Insert new imports after existing imports
+    result = "".join(lines)
+    tree = ast.parse(result)
+    insert_line = _find_last_import_line(tree)
+
+    result_lines = result.splitlines(keepends=True)
+
+    # Build import lines with proper indentation (at module level, no indent)
+    new_import_lines = [f"import {mod}\n" for mod in sorted(new_imports)]
+
+    # Insert all new imports at the insertion point
+    for new_line in reversed(new_import_lines):
+        result_lines.insert(insert_line, new_line)
+
+    return "".join(result_lines)

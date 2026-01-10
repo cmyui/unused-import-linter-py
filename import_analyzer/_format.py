@@ -7,6 +7,8 @@ from pathlib import Path
 from import_analyzer._cross_file import CrossFileResult
 from import_analyzer._data import ImplicitReexport
 from import_analyzer._data import ImportInfo
+from import_analyzer._data import IndirectAttributeAccess
+from import_analyzer._data import IndirectImport
 from import_analyzer._data import is_under_path
 
 # Box drawing characters for nicer output
@@ -29,6 +31,7 @@ def format_cross_file_results(
     warn_implicit_reexports: bool = False,
     warn_circular: bool = False,
     warn_unreachable: bool = False,
+    show_indirect: bool = False,
     quiet: bool = False,
     fixed_files: dict[Path, int] | None = None,
 ) -> list[str]:
@@ -41,6 +44,7 @@ def format_cross_file_results(
         warn_implicit_reexports: Whether to show implicit re-export warnings
         warn_circular: Whether to show circular import warnings
         warn_unreachable: Whether to show unreachable file warnings
+        show_indirect: Whether to show indirect imports/accesses found
         quiet: Whether to suppress detailed output
         fixed_files: Dict of file -> count of imports fixed (for fix mode)
 
@@ -100,6 +104,24 @@ def format_cross_file_results(
         if lines:
             lines.append("")
         lines.extend(_format_unreachable_files(filtered_unreachable, base_path))
+
+    # Section 5: Indirect imports/attr accesses (filtered to base_path)
+    filtered_indirect_imports = [
+        ind for ind in result.indirect_imports
+        if is_under_path(ind.file, base_path)
+    ]
+    filtered_indirect_attrs = [
+        acc for acc in result.indirect_attr_accesses
+        if is_under_path(acc.file, base_path)
+    ]
+    if show_indirect and (filtered_indirect_imports or filtered_indirect_attrs) and not quiet:
+        if lines:
+            lines.append("")
+        lines.extend(
+            _format_indirect_imports(
+                filtered_indirect_imports, filtered_indirect_attrs, base_path
+            )
+        )
 
     # Summary
     if lines:
@@ -291,6 +313,71 @@ def _format_unreachable_files(
     for file_path in sorted(unreachable_files):
         rel_path = make_relative(file_path, base_path)
         lines.append(f"  • {rel_path}")
+
+    return lines
+
+
+def _format_indirect_imports(
+    indirect_imports: list[IndirectImport],
+    indirect_attr_accesses: list[IndirectAttributeAccess],
+    base_path: Path,
+) -> list[str]:
+    """Format indirect import and attribute access warnings."""
+    lines: list[str] = []
+
+    # Header
+    lines.append(HORIZONTAL * 79)
+    lines.append("Indirect Imports (importing from re-exporter instead of source)")
+    lines.append(HORIZONTAL * 79)
+
+    # Group by file
+    imports_by_file: dict[Path, list[IndirectImport]] = defaultdict(list)
+    attrs_by_file: dict[Path, list[IndirectAttributeAccess]] = defaultdict(list)
+
+    for ind in indirect_imports:
+        imports_by_file[ind.file].append(ind)
+    for acc in indirect_attr_accesses:
+        attrs_by_file[acc.file].append(acc)
+
+    all_files = sorted(set(imports_by_file.keys()) | set(attrs_by_file.keys()))
+
+    for file_path in all_files:
+        rel_path = make_relative(file_path, base_path)
+        lines.append("")
+        lines.append(rel_path)
+
+        # Format indirect imports
+        for ind in sorted(imports_by_file.get(file_path, []), key=lambda x: x.lineno):
+            current = make_relative(ind.current_source, base_path)
+            original = make_relative(ind.original_source, base_path)
+            if ind.name != ind.original_name:
+                lines.append(
+                    f"  {ind.lineno:>4}: '{ind.name}' (as '{ind.original_name}') "
+                    f"from '{current}' → '{original}'"
+                )
+            else:
+                lines.append(
+                    f"  {ind.lineno:>4}: '{ind.name}' from '{current}' → '{original}'"
+                )
+
+        # Format indirect attribute accesses
+        for acc in sorted(
+            attrs_by_file.get(file_path, []), key=lambda x: x.import_lineno
+        ):
+            current = make_relative(acc.current_source, base_path)
+            original = make_relative(acc.original_source, base_path)
+            usage_count = len(acc.usages)
+            if acc.attr_name != acc.original_name:
+                lines.append(
+                    f"  {acc.import_lineno:>4}: '{acc.import_name}.{acc.attr_name}' "
+                    f"(as '{acc.original_name}') from '{current}' → '{original}' "
+                    f"({usage_count} usage(s))"
+                )
+            else:
+                lines.append(
+                    f"  {acc.import_lineno:>4}: '{acc.import_name}.{acc.attr_name}' "
+                    f"from '{current}' → '{original}' ({usage_count} usage(s))"
+                )
 
     return lines
 
