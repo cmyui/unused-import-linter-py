@@ -1,13 +1,11 @@
 """Cross-file import analysis."""
 from __future__ import annotations
 
-import ast
 from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
-from import_analyzer._ast_helpers import collect_dunder_all_names
 from import_analyzer._data import ImplicitReexport
 from import_analyzer._data import ImportInfo
 from import_analyzer._detection import find_unused_imports
@@ -46,35 +44,34 @@ class CrossFileAnalyzer:
 
         Steps:
         1. Run single-file analysis on each module
-        2. Identify "reexport-only" imports (in __all__ but only for re-export)
-        3. Identify "implicit-reexport-only" imports (__init__.py without __all__)
-        4. Compute full cascade of unused imports (iterate until stable)
-        5. Find implicit re-exports (re-exported but not in __all__)
-        6. Aggregate external module usage
-        7. Find circular imports
+        2. Identify "implicit-reexport-only" imports (__init__.py without __all__)
+        3. Compute full cascade of unused imports (iterate until stable)
+        4. Find implicit re-exports (re-exported but not in __all__)
+        5. Aggregate external module usage
+        6. Find circular imports
 
         The cascade computation handles:
         - Re-export chains: A imports X from B (unused in A), B imports X from C
-        - __all__ re-exports: B imports X and puts it in __all__, A imports X
         - File reachability: removing module imports makes files unreachable
 
         When a file becomes unreachable from the entry point, imports from that
         file no longer count as "consumers" of re-exports.
+
+        Note: Imports listed in __all__ are considered "used" (public API) and
+        are never flagged as unused. This matches the behavior of other linters
+        like flake8, ruff, and autoflake.
         """
         result = CrossFileResult()
 
         # Step 1: Get single-file unused imports for each module
         single_file_unused = self._get_single_file_unused()
 
-        # Step 2: Get "reexport-only" imports (in __all__ but only for re-export)
-        reexport_only = self._get_reexport_only_imports(single_file_unused)
-
-        # Step 3: Get "implicit-reexport-only" imports (__init__.py without __all__)
+        # Step 2: Get "implicit-reexport-only" imports (__init__.py without __all__)
         implicit_reexport_only = self._get_implicit_reexport_only_imports(
             single_file_unused,
         )
 
-        # Step 4: Compute full cascade of unused imports
+        # Step 3: Compute full cascade of unused imports
         all_removed: dict[Path, set[str]] = defaultdict(set)
         unreachable_files: set[Path] = set()
 
@@ -101,15 +98,6 @@ class CrossFileAnalyzer:
                             all_removed[file_path].add(imp.name)
                             changed = True
 
-            # Check "reexport-only" imports (in __all__ but only for re-export)
-            for file_path, reexport_imports in reexport_only.items():
-                reexported_names = reexported.get(file_path, set())
-                for imp in reexport_imports:
-                    if imp.name not in reexported_names:
-                        if imp.name not in all_removed[file_path]:
-                            all_removed[file_path].add(imp.name)
-                            changed = True
-
             # Check "implicit-reexport-only" imports (__init__.py without __all__)
             for file_path, implicit_imports in implicit_reexport_only.items():
                 reexported_names = reexported.get(file_path, set())
@@ -125,11 +113,6 @@ class CrossFileAnalyzer:
 
             # Add from single-file unused
             for imp in single_file_unused.get(file_path, []):
-                if imp.name in removed_names:
-                    unused_imports.append(imp)
-
-            # Add from reexport-only
-            for imp in reexport_only.get(file_path, []):
                 if imp.name in removed_names:
                     unused_imports.append(imp)
 
@@ -176,73 +159,6 @@ class CrossFileAnalyzer:
             unused = find_unused_imports(source)
             if unused:
                 result[file_path] = unused
-
-        return result
-
-    def _get_reexport_only_imports(
-        self,
-        single_file_unused: dict[Path, list[ImportInfo]],
-    ) -> dict[Path, list[ImportInfo]]:
-        """Find imports that exist solely for re-export via __all__.
-
-        These are imports that:
-        1. Are listed in __all__ (so they appear "used" to single-file analysis)
-        2. Are actual imports (not definitions)
-        3. Are not used locally in any other way
-
-        When no one imports these names from the file, they become unused.
-        """
-        result: dict[Path, list[ImportInfo]] = {}
-
-        for file_path, module_info in self.graph.nodes.items():
-            try:
-                source = file_path.read_text(encoding="utf-8")
-                tree = ast.parse(source)
-            except (OSError, UnicodeDecodeError, SyntaxError):
-                continue
-
-            # Get names in __all__
-            all_names = collect_dunder_all_names(tree)
-            if not all_names:
-                continue
-
-            # Get import names and their ImportInfo objects
-            import_by_name = {imp.name: imp for imp in module_info.imports}
-            defined_names = module_info.defined_names
-
-            # Names already flagged as unused locally
-            unused_locally = {
-                imp.name for imp in single_file_unused.get(file_path, [])
-            }
-
-            # Find candidates: in __all__, is an import, not defined, not already unused
-            candidates = (
-                all_names
-                & set(import_by_name.keys())
-                - defined_names
-                - unused_locally
-            )
-
-            if not candidates:
-                continue
-
-            # Check which candidates are actually used locally (beyond __all__)
-            # by re-running unused detection without __all__ protection
-            unused_without_all = find_unused_imports(source, ignore_all=True)
-            unused_without_all_names = {imp.name for imp in unused_without_all}
-
-            # Reexport-only: would be unused if we ignored __all__
-            reexport_only_names = candidates & unused_without_all_names
-
-            if reexport_only_names:
-                # Get ImportInfo objects for these
-                reexport_only_imports = [
-                    import_by_name[name]
-                    for name in reexport_only_names
-                    if name in import_by_name
-                ]
-                if reexport_only_imports:
-                    result[file_path] = reexport_only_imports
 
         return result
 

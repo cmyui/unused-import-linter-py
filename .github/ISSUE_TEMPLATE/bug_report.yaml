@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a false positive, false negative, or unexpected behavior
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting! Please search existing issues first to avoid duplicates.
+
+  - type: textarea
+    attributes:
+      label: Summary
+      description: A minimal reproducible example demonstrating the issue
+      placeholder: |
+        ```python
+        # example.py
+        import os  # This should be flagged as unused but isn't
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Actual behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: import-analyzer version
+      placeholder: e.g., 0.1.2
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Python version
+      placeholder: e.g., 3.12
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true

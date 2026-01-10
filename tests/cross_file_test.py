@@ -361,11 +361,12 @@ def test_cascade_multiple_consumers():
         assert not any(imp.name == "List" for imp in utils_unused)
 
 
-def test_cascade_reexport_only_via_dunder_all():
-    """Should cascade through imports that are only in __all__ for re-export.
+def test_dunder_all_protects_imports_from_cascade():
+    """Imports in __all__ should NOT be flagged as unused.
 
-    This tests the case where an import is "protected" by __all__ in single-file
-    analysis, but should become unused when no one imports it anymore.
+    Being listed in __all__ is an explicit declaration of public API.
+    This matches the behavior of flake8, ruff, and autoflake.
+    External consumers (outside the analyzed tree) may use these exports.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir).resolve()
@@ -392,16 +393,16 @@ def test_cascade_reexport_only_via_dunder_all():
         main_unused = result.unused_imports.get(root / "main.py", [])
         assert any(imp.name == "Foo" for imp in main_unused), "Foo should be unused in main.py"
 
-        # pkg/__init__.py's Foo import should ALSO be unused (cascade through __all__)
-        # because main.py was the only consumer
+        # pkg/__init__.py's Foo import is in __all__, so it's considered "used" (public API)
+        # and should NOT be flagged as unused
         init_unused = result.unused_imports.get(pkg / "__init__.py", [])
-        assert any(imp.name == "Foo" for imp in init_unused), (
-            "Foo should be unused in pkg/__init__.py (reexport-only cascade)"
+        assert not any(imp.name == "Foo" for imp in init_unused), (
+            "Foo should NOT be unused in pkg/__init__.py (protected by __all__)"
         )
 
 
-def test_cascade_reexport_only_keeps_used():
-    """Should NOT remove __all__ exports that are still being imported."""
+def test_dunder_all_protects_used_imports():
+    """__all__ exports that are used should obviously not be flagged as unused."""
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir).resolve()
 
@@ -427,7 +428,7 @@ def test_cascade_reexport_only_keeps_used():
         main_unused = result.unused_imports.get(root / "main.py", [])
         assert not any(imp.name == "Foo" for imp in main_unused)
 
-        # pkg/__init__.py's Foo import should NOT be unused (main.py uses it)
+        # pkg/__init__.py's Foo import is in __all__ (and also used by main.py)
         init_unused = result.unused_imports.get(pkg / "__init__.py", [])
         assert not any(imp.name == "Foo" for imp in init_unused)
 

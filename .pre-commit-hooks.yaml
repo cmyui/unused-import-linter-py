@@ -1,0 +1,18 @@
+# Cross-file analysis (recommended) - analyzes entire project once
+- id: import-analyzer
+  name: import-analyzer
+  description: Detect unused imports with cross-file analysis
+  entry: import-analyzer
+  language: python
+  types: [python]
+  pass_filenames: false
+  args: [., --fix, --warn-implicit-reexports, --warn-circular, --warn-unreachable]
+
+# Single-file analysis - only analyzes changed files (faster, less thorough)
+- id: import-analyzer-single-file
+  name: import-analyzer (single-file)
+  description: Detect unused imports in individual files
+  entry: import-analyzer
+  language: python
+  types: [python]
+  args: [--single-file, --fix]

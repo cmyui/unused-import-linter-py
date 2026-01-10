@@ -39,7 +39,7 @@ A Python import analyzer with cross-file analysis, unused import detection, circ
 **Cross-file analysis** — This is the only tool that follows imports from your entry point and tracks which imports are actually used by other files. This enables:
 
 - **Re-export preservation**: If `utils.py` imports `List` and `main.py` does `from utils import List`, the import in `utils.py` is correctly identified as used
-- **Cascade detection**: When removing an unused import makes another import unused, this tool finds all of them in a single pass
+- **Cascade detection**: When removing an unused import makes another import unused, this tool finds all of them in a single pass (note: imports in `__all__` are always preserved as public API)
 - **Circular import detection**: Warns about import cycles in your codebase
 - **Unreachable file detection**: Identifies files that become dead code after fixing imports
 
@@ -70,6 +70,35 @@ Or install from source:
 git clone https://github.com/cmyui/import-analyzer-py
 cd import-analyzer-py
 pip install .
+```
+
+## pre-commit
+
+Add to your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/cmyui/import-analyzer-py
+    rev: v0.1.2  # or latest version
+    hooks:
+      # Cross-file analysis (recommended) - analyzes entire project
+      - id: import-analyzer
+
+      # Or for faster single-file analysis on changed files only:
+      # - id: import-analyzer-single-file
+```
+
+The cross-file hook runs with all features enabled by default:
+`--fix --warn-implicit-reexports --warn-circular --warn-unreachable`
+
+To customize:
+
+```yaml
+hooks:
+  - id: import-analyzer
+    args: [.]  # check only, no warnings
+  - id: import-analyzer
+    args: [., --fix]  # fix but no warnings
 ```
 
 ## Usage
@@ -219,6 +248,8 @@ from typing import List   # becomes unused when helpers.py's import is removed
 ```
 
 Running `import-analyzer --fix main.py` removes all three imports in a single pass.
+
+Note: Imports listed in `__all__` are always considered "used" (public API declaration) and won't be removed by cascade detection. This matches the behavior of flake8, ruff, and autoflake.
 
 ### noqa comments
 

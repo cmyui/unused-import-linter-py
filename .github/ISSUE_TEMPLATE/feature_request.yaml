@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a new feature or enhancement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for your suggestion! Please search existing issues first.
+
+  - type: textarea
+    attributes:
+      label: Description
+      description: Describe the feature you'd like to see
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Use case
+      description: Why would this feature be useful? What problem does it solve?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Example
+      description: If applicable, show an example of the desired behavior
+      placeholder: |
+        ```python
+        # Input code
+        ```
+
+        Expected output:
+        ```
+        ```
