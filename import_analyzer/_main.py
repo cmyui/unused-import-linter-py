@@ -101,7 +101,9 @@ def check_cross_file(
     indirect_fixed_files: dict[Path, int] = {}
     if fix_indirect and result.indirect_imports:
         indirect_fixed_files = _fix_indirect_imports(
-            result.indirect_imports, graph, path,
+            result.indirect_imports,
+            graph,
+            path,
         )
 
     # Filter results to only files under the target path
