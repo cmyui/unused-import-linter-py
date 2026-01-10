@@ -608,30 +608,33 @@ class NameUsageCollector(ast.NodeVisitor):
 
 @dataclass
 class AttributeUsage:
-    """A single module.attr usage location."""
+    """A module.attr1.attr2... usage location."""
 
-    attr_name: str  # The attribute being accessed (e.g., "LOGGER")
+    attr_path: list[str]  # Path of attributes (e.g., ["mod", "LOGGER"] for pkg.mod.LOGGER)
     lineno: int  # Line number of the usage
-    col_offset: int  # Column offset of the start of "module" or alias
+    col_offset: int  # Column offset of the start of the root module name
 
 
 class AttributeAccessCollector(ast.NodeVisitor):
     """Collect module.attr usages for 'import module' statements.
 
     Given source like:
-        import models
-        models.LOGGER.info("hello")
-        models.Config.DEBUG
+        import pkg
+        pkg.mod.LOGGER.info("hello")
+        pkg.Config.DEBUG
 
     This collector produces:
         {
-            "models": [
-                AttributeUsage("LOGGER", 2, 0),
-                AttributeUsage("Config", 3, 0),
+            "pkg": [
+                AttributeUsage(["mod", "LOGGER"], 2, 0),
+                AttributeUsage(["Config"], 3, 0),
             ]
         }
 
-    Handles aliased imports: 'import models as m' + 'm.LOGGER'
+    Handles:
+    - Aliased imports: 'import models as m' + 'm.LOGGER'
+    - Nested access: 'import pkg' + 'pkg.mod.LOGGER'
+    - Any depth of nesting
     """
 
     def __init__(self, module_imports: set[str]) -> None:
@@ -645,33 +648,55 @@ class AttributeAccessCollector(ast.NodeVisitor):
         self.usages: dict[str, list[AttributeUsage]] = {}
         for name in module_imports:
             self.usages[name] = []
+        # Track which attribute chains we've already recorded (to avoid duplicates)
+        # Key: (root_name, lineno, col_offset, tuple(attr_path))
+        self._seen: set[tuple[str, int, int, tuple[str, ...]]] = set()
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        """Track first-level attribute access on imported modules."""
+        """Track attribute access chains on imported modules."""
         # Only interested in Load context (reading, not assignment to attribute)
         if not isinstance(node.ctx, ast.Load):
             self.generic_visit(node)
             return
 
-        # Check if this is module.attr (not module.attr.subattr.method)
-        # We want the immediate attribute access on the module
-        if not isinstance(node.value, ast.Name):
+        # Walk up to find the root Name and collect the attribute path
+        attr_path: list[str] = []
+        current: ast.expr = node
+
+        while isinstance(current, ast.Attribute):
+            attr_path.append(current.attr)
+            current = current.value
+
+        # Check if the root is a Name node
+        if not isinstance(current, ast.Name):
             self.generic_visit(node)
             return
 
-        module_name = node.value.id
+        root_name = current.id
 
         # Check if this name refers to an imported module
-        if module_name not in self.module_imports:
+        if root_name not in self.module_imports:
             self.generic_visit(node)
             return
 
+        # Reverse to get path from root to leaf
+        attr_path.reverse()
+
+        # Check if we've already recorded this exact chain
+        # (nested visits can produce duplicates e.g., pkg.mod.LOGGER visits both
+        # the full chain and the pkg.mod part)
+        key = (root_name, current.lineno, current.col_offset, tuple(attr_path))
+        if key in self._seen:
+            self.generic_visit(node)
+            return
+        self._seen.add(key)
+
         # Record this usage
-        self.usages[module_name].append(
+        self.usages[root_name].append(
             AttributeUsage(
-                attr_name=node.attr,
-                lineno=node.lineno,
-                col_offset=node.value.col_offset,  # Start of "module" or alias
+                attr_path=attr_path,
+                lineno=current.lineno,
+                col_offset=current.col_offset,
             ),
         )
 

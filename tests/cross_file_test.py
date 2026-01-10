@@ -1741,3 +1741,261 @@ def test_direct_attr_access_not_flagged():
 
         # Should NOT detect any indirect attr access
         assert len(result.indirect_attr_accesses) == 0
+
+
+# =============================================================================
+# Nested module attribute access tests
+# =============================================================================
+
+
+def test_indirect_attr_access_nested_submodule():
+    """Should detect nested access like pkg.mod.LOGGER."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # pkg/__init__.py is empty
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal/__init__.py re-exports LOGGER from logger.py
+        internal = pkg / "internal"
+        internal.mkdir()
+        (internal / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses pkg.internal.LOGGER
+        (root / "app.py").write_text(
+            "import pkg\n" "pkg.internal.LOGGER.info('hello')\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect the nested indirect attribute access
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.file == root / "app.py"
+        assert acc.import_name == "pkg"
+        assert acc.attr_path == ["internal", "LOGGER"]
+        assert acc.attr_name == "LOGGER"
+        assert acc.original_source == root / "logger.py"
+
+
+def test_indirect_attr_access_deep_nesting():
+    """Should handle deeply nested access like pkg.sub.mod.LOGGER."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/sub/__init__.py
+        sub = pkg / "sub"
+        sub.mkdir()
+        (sub / "__init__.py").write_text("")
+
+        # pkg/sub/mod/__init__.py re-exports LOGGER
+        mod = sub / "mod"
+        mod.mkdir()
+        (mod / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses pkg.sub.mod.LOGGER
+        (root / "app.py").write_text(
+            "import pkg\n" "pkg.sub.mod.LOGGER.info('hello')\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect the deeply nested indirect access
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_path == ["sub", "mod", "LOGGER"]
+        assert acc.original_source == root / "logger.py"
+
+
+def test_fix_indirect_attr_access_nested():
+    """Should rewrite nested access to use direct source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal/__init__.py re-exports LOGGER
+        internal = pkg / "internal"
+        internal.mkdir()
+        (internal / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses pkg.internal.LOGGER
+        (root / "app.py").write_text(
+            "import pkg\n" "pkg.internal.LOGGER.info('hello')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # app.py should now use logger.LOGGER
+        app_content = (root / "app.py").read_text()
+        assert "import logger" in app_content
+        assert "logger.LOGGER" in app_content
+        assert "pkg.internal.LOGGER" not in app_content
+
+
+def test_fix_indirect_attr_access_deep_nesting():
+    """Should rewrite deeply nested access."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger instance'\n")
+
+        # pkg/sub/mod/__init__.py structure
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        sub = pkg / "sub"
+        sub.mkdir()
+        (sub / "__init__.py").write_text("")
+        mod = sub / "mod"
+        mod.mkdir()
+        (mod / "__init__.py").write_text("from logger import LOGGER\n")
+
+        # app.py
+        (root / "app.py").write_text(
+            "import pkg\n"
+            "pkg.sub.mod.LOGGER.info('hello')\n"
+            "pkg.sub.mod.LOGGER.debug('debug')\n",
+        )
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # Both usages should be rewritten
+        app_content = (root / "app.py").read_text()
+        assert "import logger" in app_content
+        assert app_content.count("logger.LOGGER") == 2
+        assert "pkg.sub.mod.LOGGER" not in app_content
+
+
+def test_indirect_attr_access_nested_with_alias_in_chain():
+    """Should handle aliases in nested re-export chains."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # core.py defines CONFIG
+        (root / "core.py").write_text("CONFIG = {}\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal/__init__.py re-exports CONFIG as CONF
+        internal = pkg / "internal"
+        internal.mkdir()
+        (internal / "__init__.py").write_text("from core import CONFIG as CONF\n")
+
+        # app.py uses pkg.internal.CONF
+        (root / "app.py").write_text(
+            "import pkg\n" "print(pkg.internal.CONF)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect with original name
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_path == ["internal", "CONF"]
+        assert acc.attr_name == "CONF"
+        assert acc.original_name == "CONFIG"
+
+        # Run fix
+        check_cross_file(root / "app.py", fix_indirect=True)
+
+        # Should rewrite to use core.CONFIG
+        app_content = (root / "app.py").read_text()
+        assert "import core" in app_content
+        assert "core.CONFIG" in app_content
+
+
+def test_indirect_attr_access_nested_mixed_direct_indirect():
+    """Nested access with some direct and some indirect attrs."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal/__init__.py defines Client and re-exports LOGGER
+        internal = pkg / "internal"
+        internal.mkdir()
+        (internal / "__init__.py").write_text(
+            "from logger import LOGGER\n" "Client = 'client class'\n",
+        )
+
+        # app.py uses both
+        (root / "app.py").write_text(
+            "import pkg\n"
+            "pkg.internal.LOGGER.info('hello')\n"
+            "print(pkg.internal.Client)\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should only flag LOGGER (indirect), not Client (direct)
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_path == ["internal", "LOGGER"]
+
+
+def test_indirect_attr_access_nested_with_file_submodule():
+    """Nested access through .py file submodule (not __init__.py)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir).resolve()
+
+        # logger.py defines LOGGER
+        (root / "logger.py").write_text("LOGGER = 'logger'\n")
+
+        # pkg/__init__.py
+        pkg = root / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        # pkg/internal.py (file, not directory) re-exports LOGGER
+        (pkg / "internal.py").write_text("from logger import LOGGER\n")
+
+        # app.py uses pkg.internal.LOGGER
+        (root / "app.py").write_text(
+            "import pkg\n" "pkg.internal.LOGGER.info('hello')\n",
+        )
+
+        graph = build_import_graph(root / "app.py")
+        result = analyze_cross_file(graph, entry_point=root / "app.py")
+
+        # Should detect through the .py submodule
+        assert len(result.indirect_attr_accesses) == 1
+        acc = result.indirect_attr_accesses[0]
+        assert acc.attr_path == ["internal", "LOGGER"]
+        assert acc.current_source == pkg / "internal.py"
+        assert acc.original_source == root / "logger.py"

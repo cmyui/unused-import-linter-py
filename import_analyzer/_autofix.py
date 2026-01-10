@@ -604,7 +604,7 @@ def fix_indirect_attr_accesses(
 
     This involves:
     1. Adding new import statements for original sources
-    2. Rewriting all usage sites (module.attr -> new_module.attr)
+    2. Rewriting all usage sites (module.attr.chain -> new_module.original_name)
 
     Note: Removing the now-unused original import is handled by the
     existing unused import removal logic.
@@ -614,13 +614,23 @@ def fix_indirect_attr_accesses(
         indirect_accesses: List of indirect accesses to fix (all from same file)
         module_names: Mapping from file paths to module names
 
-    Example:
+    Example (simple):
         Before:
             import models
             models.LOGGER.info("hello")
 
         After:
             import models
+            import logger
+            logger.LOGGER.info("hello")
+
+    Example (nested):
+        Before:
+            import pkg
+            pkg.internal.LOGGER.info("hello")
+
+        After:
+            import pkg
             import logger
             logger.LOGGER.info("hello")
     """
@@ -641,7 +651,9 @@ def fix_indirect_attr_accesses(
         new_imports.add(target_module)
 
         for lineno, col_offset in acc.usages:
-            old_prefix = f"{acc.import_name}.{acc.attr_name}"
+            # Build the old text: import_name.attr_path (e.g., "pkg.internal.LOGGER")
+            old_prefix = acc.import_name + "." + ".".join(acc.attr_path)
+            # Build the new text: target_module.original_name (e.g., "logger.LOGGER")
             new_prefix = f"{target_module}.{acc.original_name}"
             replacements.append((lineno, col_offset, old_prefix, new_prefix))
 

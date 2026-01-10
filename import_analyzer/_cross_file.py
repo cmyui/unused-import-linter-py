@@ -1,20 +1,26 @@
 """Cross-file import analysis."""
+
 from __future__ import annotations
 
+import ast
 from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
-import ast
-
 from import_analyzer._ast_helpers import AttributeAccessCollector
+from import_analyzer._ast_helpers import ImportExtractor
+from import_analyzer._ast_helpers import collect_dunder_all_names
 from import_analyzer._data import ImplicitReexport
+from import_analyzer._data import ImportEdge
 from import_analyzer._data import ImportInfo
 from import_analyzer._data import IndirectAttributeAccess
 from import_analyzer._data import IndirectImport
+from import_analyzer._data import ModuleInfo
 from import_analyzer._detection import find_unused_imports
+from import_analyzer._graph import DefinitionCollector
 from import_analyzer._graph import ImportGraph
+from import_analyzer._resolution import ModuleResolver
 
 
 @dataclass
@@ -158,7 +164,9 @@ class CrossFileAnalyzer:
 
         # Step 8: Store truly unreachable files for user warning
         # Filter to only files that are truly dead code (no reachable ancestors)
-        truly_unreachable = self._filter_truly_unreachable(unreachable_files, all_removed)
+        truly_unreachable = self._filter_truly_unreachable(
+            unreachable_files, all_removed,
+        )
         result.unreachable_files = truly_unreachable - {self.entry_point}
 
         # Step 9: Find indirect imports (imports through re-exporters)
@@ -218,9 +226,7 @@ class CrossFileAnalyzer:
             defined_names = module_info.defined_names
 
             # Names already flagged as unused locally
-            unused_locally = {
-                imp.name for imp in single_file_unused.get(file_path, [])
-            }
+            unused_locally = {imp.name for imp in single_file_unused.get(file_path, [])}
 
             # Find candidates: is an import, not defined, not already unused
             candidates = set(import_by_name.keys()) - defined_names - unused_locally
@@ -388,7 +394,8 @@ class CrossFileAnalyzer:
         return dict(reexported)
 
     def _find_implicit_reexports(
-        self, reexported: dict[Path, set[str]],
+        self,
+        reexported: dict[Path, set[str]],
     ) -> list[ImplicitReexport]:
         """Find imports that are re-exported but not in __all__."""
         result: list[ImplicitReexport] = []
@@ -567,14 +574,19 @@ class CrossFileAnalyzer:
     def _find_indirect_attr_accesses(self) -> list[IndirectAttributeAccess]:
         """Find attribute accesses that go through re-exporters.
 
-        For each 'import module' statement followed by 'module.attr':
-        1. Check if attr is defined in module or re-exported
-        2. If re-exported, trace to the original source
-        3. Group usages by original source for efficient rewriting
+        Handles nested access like pkg.mod.LOGGER where:
+        1. pkg resolves to some module
+        2. mod could be a submodule or re-exported module
+        3. LOGGER is the final attribute to check for indirect access
+
+        For each usage, traces through the chain to find if the final
+        attribute is re-exported from another source.
         """
         results: list[IndirectAttributeAccess] = []
 
-        for file_path, module_info in self.graph.nodes.items():
+        # Iterate over a copy of the keys since we may add new nodes during iteration
+        for file_path in list(self.graph.nodes.keys()):
+            module_info = self.graph.nodes[file_path]
             # Find 'import X' or 'import X as Y' style imports
             # imp.name = bound name (alias if present), imp.original_name = actual module
             module_imports: dict[str, ImportInfo] = {}
@@ -595,68 +607,269 @@ class CrossFileAnalyzer:
             collector = AttributeAccessCollector(set(module_imports.keys()))
             collector.visit(tree)
 
-            # For each alias.attr (or module.attr), check if attr is re-exported
+            # For each root import and its usages
             for bound_name, usages in collector.usages.items():
                 if not usages:
                     continue
 
                 imp = module_imports[bound_name]
 
-                # Find the resolved module file using original module name
+                # Find the resolved module file for the root import
+                root_module_path: Path | None = None
                 for edge in self.graph.get_imports(file_path):
                     if edge.module_name == imp.original_name and edge.imported:
-                        imported_module = self.graph.nodes.get(edge.imported)
-                        if not imported_module:
-                            continue
-
-                        # Group usages by attr name
-                        by_attr: dict[str, list[tuple[int, int]]] = defaultdict(list)
-                        for u in usages:
-                            by_attr[u.attr_name].append((u.lineno, u.col_offset))
-
-                        for attr_name, usage_locs in by_attr.items():
-                            # Is attr defined in the imported module?
-                            if attr_name in imported_module.defined_names:
-                                continue  # Direct, skip
-
-                            # Trace to original source
-                            trace_result = self._trace_import_source(
-                                edge.imported,
-                                attr_name,
-                            )
-                            if trace_result is None:
-                                continue
-                            original_source, original_name = trace_result
-                            if original_source == edge.imported:
-                                continue  # Already at source
-
-                            # Check same-package re-export
-                            is_same_pkg = self._is_same_package_reexport(
-                                edge.imported,
-                                original_source,
-                            )
-
-                            if is_same_pkg and not self.include_same_package_indirect:
-                                continue
-
-                            results.append(
-                                IndirectAttributeAccess(
-                                    file=file_path,
-                                    import_name=bound_name,
-                                    import_lineno=imp.lineno,
-                                    attr_name=attr_name,
-                                    original_name=original_name,
-                                    usages=usage_locs,
-                                    current_source=edge.imported,
-                                    original_source=original_source,
-                                    is_same_package=is_same_pkg,
-                                ),
-                            )
+                        root_module_path = edge.imported
                         break
 
-        # Sort by file, then line number, then attr name for consistent output
-        results.sort(key=lambda x: (x.file, x.import_lineno, x.attr_name))
+                if not root_module_path:
+                    continue
+
+                # Group usages by attr_path (as tuple for hashability)
+                by_path: dict[tuple[str, ...], list[tuple[int, int]]] = defaultdict(
+                    list,
+                )
+                for u in usages:
+                    path_key = tuple(u.attr_path)
+                    by_path[path_key].append((u.lineno, u.col_offset))
+
+                for attr_path_tuple, usage_locs in by_path.items():
+                    attr_path = list(attr_path_tuple)
+                    if not attr_path:
+                        continue
+
+                    # Resolve through the path to find the final module
+                    # and check if the final attribute is indirect
+                    result = self._resolve_attr_path(root_module_path, attr_path)
+                    if result is None:
+                        continue
+
+                    final_module, final_attr, original_source, original_name = result
+
+                    # If original source is the same as final module, it's direct
+                    if original_source == final_module:
+                        continue
+
+                    # Check same-package re-export
+                    is_same_pkg = self._is_same_package_reexport(
+                        final_module,
+                        original_source,
+                    )
+
+                    if is_same_pkg and not self.include_same_package_indirect:
+                        continue
+
+                    results.append(
+                        IndirectAttributeAccess(
+                            file=file_path,
+                            import_name=bound_name,
+                            import_lineno=imp.lineno,
+                            attr_path=attr_path,
+                            attr_name=final_attr,
+                            original_name=original_name,
+                            usages=usage_locs,
+                            current_source=final_module,
+                            original_source=original_source,
+                            is_same_package=is_same_pkg,
+                        ),
+                    )
+
+        # Sort by file, then line number, then attr path for consistent output
+        results.sort(key=lambda x: (x.file, x.import_lineno, tuple(x.attr_path)))
         return results
+
+    def _resolve_attr_path(
+        self,
+        start_module: Path,
+        attr_path: list[str],
+    ) -> tuple[Path, str, Path, str] | None:
+        """Resolve an attribute path through modules.
+
+        For pkg.mod.LOGGER with start_module=pkg/__init__.py and attr_path=['mod', 'LOGGER']:
+        1. Resolve 'mod' - could be submodule pkg/mod or re-exported in pkg/__init__.py
+        2. Resolve 'LOGGER' in that module - check if direct or re-exported
+
+        Returns:
+            (final_module, final_attr, original_source, original_name) or None if can't resolve.
+            final_module: The module where the final attribute is accessed
+            final_attr: The final attribute name (last in path)
+            original_source: Where it's actually defined
+            original_name: The name in original_source (may differ due to aliases)
+        """
+        if not attr_path:
+            return None
+
+        current_module = start_module
+        current_module_info = self.graph.nodes.get(current_module)
+        if not current_module_info:
+            return None
+
+        # Walk through intermediate attributes (all except the last)
+        for attr in attr_path[:-1]:
+            next_module = self._resolve_module_attr(current_module, attr)
+            if next_module is None:
+                return None
+            current_module = next_module
+            current_module_info = self.graph.nodes.get(current_module)
+            if not current_module_info:
+                return None
+
+        # Now check the final attribute
+        final_attr = attr_path[-1]
+
+        # Is it defined in the current module?
+        if final_attr in current_module_info.defined_names:
+            # Direct access - return current module as both final and original
+            return (current_module, final_attr, current_module, final_attr)
+
+        # Try to trace to original source
+        trace_result = self._trace_import_source(current_module, final_attr)
+        if trace_result is None:
+            return None
+
+        original_source, original_name = trace_result
+        return (current_module, final_attr, original_source, original_name)
+
+    def _resolve_module_attr(self, module_path: Path, attr: str) -> Path | None:
+        """Resolve an attribute that should be a module.
+
+        For pkg/__init__.py and attr='mod', looks for:
+        1. Submodule: pkg/mod/__init__.py or pkg/mod.py
+        2. Re-exported module in pkg/__init__.py
+
+        Returns the resolved module path or None.
+        """
+        module_info = self.graph.nodes.get(module_path)
+        if not module_info:
+            return None
+
+        # Determine the package directory
+        # For __init__.py, the package dir is the parent directory
+        # For regular .py files, they can't have submodules, so we skip submodule check
+        if module_path.name == "__init__.py":
+            pkg_dir = module_path.parent
+        else:
+            # Regular .py files can't have submodules accessible as attributes
+            # but could still have re-exported modules
+            pkg_dir = None
+
+        # Check if it's a submodule (only for __init__.py files)
+        # Note: submodules may not be in the graph if not explicitly imported,
+        # so we check on disk and add them dynamically
+        if pkg_dir is not None:
+            submodule_dir = pkg_dir / attr / "__init__.py"
+            submodule_file_py = pkg_dir / f"{attr}.py"
+
+            # Check for submodule directory (pkg/attr/__init__.py)
+            if submodule_dir.exists():
+                # Add to graph if not present
+                if submodule_dir not in self.graph.nodes:
+                    self._add_module_to_graph(submodule_dir)
+                if submodule_dir in self.graph.nodes:
+                    return submodule_dir
+
+            # Check for submodule file (pkg/attr.py)
+            if submodule_file_py.exists():
+                # Add to graph if not present
+                if submodule_file_py not in self.graph.nodes:
+                    self._add_module_to_graph(submodule_file_py)
+                if submodule_file_py in self.graph.nodes:
+                    return submodule_file_py
+
+        # Check if attr is imported/re-exported in the module and is a module itself
+        # Look for imports like "from .submod import something" or "import submod"
+        for imp in module_info.imports:
+            if imp.name == attr:
+                # Find where this import resolves to
+                for edge in self.graph.get_imports(module_path):
+                    if attr in edge.names and edge.imported:
+                        # Check if the imported thing is itself a module
+                        if edge.imported in self.graph.nodes:
+                            return edge.imported
+                        break
+
+        return None
+
+    def _add_module_to_graph(self, file_path: Path) -> None:
+        """Add a module to the graph dynamically.
+
+        This is used when we discover submodules that weren't explicitly imported
+        but are accessed via attribute syntax (e.g., pkg.submod.attr).
+        """
+        try:
+            source = file_path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            return
+
+        # Extract imports
+        extractor = ImportExtractor()
+        extractor.visit(tree)
+        imports = extractor.imports
+
+        # Extract defined names
+        def_collector = DefinitionCollector()
+        def_collector.visit(tree)
+        defined_names = def_collector.defined_names
+
+        # Extract __all__ if present
+        exports = collect_dunder_all_names(tree)
+
+        # Create module info
+        # Compute module name based on file path relative to graph root
+        # For simplicity, use the file stem as module name
+        if file_path.name == "__init__.py":
+            module_name = file_path.parent.name
+            is_package = True
+        else:
+            module_name = file_path.stem
+            is_package = False
+
+        module_info = ModuleInfo(
+            file_path=file_path,
+            module_name=module_name,
+            is_package=is_package,
+            imports=imports,
+            exports=exports,
+            defined_names=defined_names,
+        )
+
+        self.graph.nodes[file_path] = module_info
+
+        # Also process imports and add edges
+        # Use the entry point to create the resolver so it has the correct source root
+        # If no entry point, fall back to file's parent (may not resolve relative imports correctly)
+        resolver_entry = self.entry_point if self.entry_point else file_path
+        resolver = ModuleResolver(resolver_entry)
+
+        for imp in imports:
+            if imp.is_from_import:
+                module_name_to_resolve = imp.module
+                names = {imp.name}
+                level = imp.level
+            else:
+                module_name_to_resolve = imp.original_name
+                names = {imp.name}
+                level = imp.level
+
+            # Resolve the import
+            resolved = resolver.resolve_import(module_name_to_resolve, file_path, level)
+            is_external = resolved is None and resolver.is_external(
+                module_name_to_resolve,
+            )
+
+            edge = ImportEdge(
+                importer=file_path,
+                imported=resolved,
+                module_name=module_name_to_resolve,
+                names=names,
+                is_external=is_external,
+                level=level,
+            )
+            self.graph.add_edge(edge)
+
+            # If resolved to a local file not in graph, add it recursively
+            if resolved and resolved not in self.graph.nodes:
+                self._add_module_to_graph(resolved)
 
     def _find_import_lineno(
         self,

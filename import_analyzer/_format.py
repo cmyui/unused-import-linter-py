@@ -119,8 +119,8 @@ def format_cross_file_results(
             lines.append("")
         lines.extend(
             _format_indirect_imports(
-                filtered_indirect_imports, filtered_indirect_attrs, base_path
-            )
+                filtered_indirect_imports, filtered_indirect_attrs, base_path,
+            ),
         )
 
     # Summary
@@ -353,30 +353,32 @@ def _format_indirect_imports(
             if ind.name != ind.original_name:
                 lines.append(
                     f"  {ind.lineno:>4}: '{ind.name}' (as '{ind.original_name}') "
-                    f"from '{current}' → '{original}'"
+                    f"from '{current}' → '{original}'",
                 )
             else:
                 lines.append(
-                    f"  {ind.lineno:>4}: '{ind.name}' from '{current}' → '{original}'"
+                    f"  {ind.lineno:>4}: '{ind.name}' from '{current}' → '{original}'",
                 )
 
         # Format indirect attribute accesses
         for acc in sorted(
-            attrs_by_file.get(file_path, []), key=lambda x: x.import_lineno
+            attrs_by_file.get(file_path, []), key=lambda x: x.import_lineno,
         ):
             current = make_relative(acc.current_source, base_path)
             original = make_relative(acc.original_source, base_path)
             usage_count = len(acc.usages)
+            # Build full access path (e.g., "pkg.mod.LOGGER")
+            full_path = acc.import_name + "." + ".".join(acc.attr_path)
             if acc.attr_name != acc.original_name:
                 lines.append(
-                    f"  {acc.import_lineno:>4}: '{acc.import_name}.{acc.attr_name}' "
+                    f"  {acc.import_lineno:>4}: '{full_path}' "
                     f"(as '{acc.original_name}') from '{current}' → '{original}' "
-                    f"({usage_count} usage(s))"
+                    f"({usage_count} usage(s))",
                 )
             else:
                 lines.append(
-                    f"  {acc.import_lineno:>4}: '{acc.import_name}.{acc.attr_name}' "
-                    f"from '{current}' → '{original}' ({usage_count} usage(s))"
+                    f"  {acc.import_lineno:>4}: '{full_path}' "
+                    f"from '{current}' → '{original}' ({usage_count} usage(s))",
                 )
 
     return lines
