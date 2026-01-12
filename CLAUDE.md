@@ -66,6 +66,18 @@ import_analyzer/
   - Handles class scope quirk (doesn't enclose nested functions)
 - `DefinitionCollector`: Collects all defined names (classes, functions, variables) in a module
 - `StringAnnotationVisitor`: Parses string literals as type annotations for forward references.
+  - Special handling for typing constructs (matches pyflakes/ruff behavior):
+    - `typing.cast()`: First argument treated as annotation context
+    - `TypeVar()`: Constraints and `bound` keyword treated as annotation contexts
+    - `Literal[]`: Contents are NOT treated as type annotations (literal values)
+    - `Annotated[]`: Only first argument is annotation, rest is metadata
+    - `TypeAlias`: RHS is annotation context when annotated with TypeAlias
+  - Handles `Callable[[args], return]` with string forward references in args
+- `TypeCommentVisitor`: Parses `# type:` comments for type information (PEP 484).
+  - Supports assignment type comments: `x = []  # type: List[int]`
+  - Supports function signature type comments: `def f(x): # type: (int) -> str`
+  - Supports per-argument type comments in function signatures
+  - Handles `for` loop and `with` statement type comments
 - `collect_dunder_all_names`: Extracts names from `__all__` so exports aren't flagged.
 - `AttributeAccessCollector`: Collects `module.attr` usages for `import module` statements (used for indirect attr access detection)
 

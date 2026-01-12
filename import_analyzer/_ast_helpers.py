@@ -703,6 +703,20 @@ class AttributeAccessCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _is_typing_name(node: ast.expr, name: str) -> bool:
+    """Check if node refers to a typing construct by name.
+
+    Handles:
+    - Direct name: Literal, Annotated
+    - Attribute access: typing.Literal, typing_extensions.Annotated
+    """
+    if isinstance(node, ast.Name):
+        return node.id == name
+    if isinstance(node, ast.Attribute):
+        return node.attr == name
+    return False
+
+
 class StringAnnotationVisitor(ast.NodeVisitor):
     """Extract names from string annotations (forward references).
 
@@ -711,10 +725,27 @@ class StringAnnotationVisitor(ast.NodeVisitor):
     - Function return annotations
     - Variable annotations (AnnAssign)
     - Strings inside type subscripts (e.g., Optional["Foo"])
+    - TypeAlias RHS (when annotation is TypeAlias)
+    - typing.cast() first argument
+    - TypeVar() constraints and bound keyword
+
+    Special handling:
+    - Literal[] contents are NOT parsed (they're literal values, not types)
+    - Annotated[] only first arg is parsed (rest is metadata)
     """
 
     def __init__(self) -> None:
         self.used_names: set[str] = set()
+
+    def _parse_string_as_type(self, value: str) -> None:
+        """Parse a string value as a type annotation."""
+        try:
+            parsed = ast.parse(value, mode="eval")
+            collector = NameUsageCollector()
+            collector.visit(parsed)
+            self.used_names.update(collector.used_names)
+        except SyntaxError:
+            pass
 
     def _parse_string_annotation(self, node: ast.expr | None) -> None:
         """Parse a potential string annotation and extract names."""
@@ -722,20 +753,37 @@ class StringAnnotationVisitor(ast.NodeVisitor):
             return
         # Handle direct string constant
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            try:
-                parsed = ast.parse(node.value, mode="eval")
-                collector = NameUsageCollector()
-                collector.visit(parsed)
-                self.used_names.update(collector.used_names)
-            except SyntaxError:
-                pass
+            self._parse_string_as_type(node.value)
         # Handle subscripts like Optional["Foo"] - recurse into the slice
         elif isinstance(node, ast.Subscript):
+            # Special case: Literal[] contents are NOT type annotations
+            if _is_typing_name(node.value, "Literal"):
+                # Don't parse slice - Literal contents are literal values
+                # But DO recurse into the value itself (in case it's nested)
+                self._parse_string_annotation(node.value)
+                return
+
+            # Special case: Annotated[] - only first arg is type annotation
+            if _is_typing_name(node.value, "Annotated"):
+                # Only process first element of slice
+                if isinstance(node.slice, ast.Tuple) and node.slice.elts:
+                    self._parse_string_annotation(node.slice.elts[0])
+                else:
+                    # Single arg Annotated (unusual but valid)
+                    self._parse_string_annotation(node.slice)
+                # Process the value too (Annotated itself)
+                self._parse_string_annotation(node.value)
+                return
+
+            # Normal case: recurse into slice and value
             self._parse_string_annotation(node.slice)
-            # Also check the value (e.g., for nested like Dict[str, "Foo"])
             self._parse_string_annotation(node.value)
         # Handle tuples in subscripts like Dict["Key", "Value"]
         elif isinstance(node, ast.Tuple):
+            for elt in node.elts:
+                self._parse_string_annotation(elt)
+        # Handle lists in subscripts like Callable[["Arg1", "Arg2"], "Return"]
+        elif isinstance(node, ast.List):
             for elt in node.elts:
                 self._parse_string_annotation(elt)
         # Handle BinOp for union types like "Foo" | "Bar"
@@ -769,6 +817,56 @@ class StringAnnotationVisitor(ast.NodeVisitor):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         # Variable annotation like `x: "Foo" = ...`
         self._parse_string_annotation(node.annotation)
+
+        # Special case: TypeAlias - RHS is also annotation context
+        # e.g., PathAlias: TypeAlias = "Path"
+        if _is_typing_name(node.annotation, "TypeAlias") and node.value:
+            self._parse_string_annotation(node.value)
+
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        """Handle special typing functions like cast() and TypeVar()."""
+        # typing.cast(type, value) - first arg is annotation context
+        if _is_typing_name(node.func, "cast") and node.args:
+            self._parse_string_annotation(node.args[0])
+
+        # TypeVar("T", constraint1, constraint2, ..., bound=type)
+        # - Args after first are constraints (annotation context)
+        # - bound keyword is annotation context
+        if _is_typing_name(node.func, "TypeVar"):
+            # Process constraint args (skip first which is the name)
+            for arg in node.args[1:]:
+                self._parse_string_annotation(arg)
+            # Process bound keyword
+            for kw in node.keywords:
+                if kw.arg == "bound":
+                    self._parse_string_annotation(kw.value)
+
+        self.generic_visit(node)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        """Handle type subscripts like Callable[["Arg"], "Return"].
+
+        This handles forward references in type expressions that appear
+        outside of annotation contexts (e.g., type aliases).
+        """
+        # Skip Literal contents - not type annotations
+        if _is_typing_name(node.value, "Literal"):
+            self.generic_visit(node)
+            return
+
+        # For Annotated, only first arg is annotation
+        if _is_typing_name(node.value, "Annotated"):
+            if isinstance(node.slice, ast.Tuple) and node.slice.elts:
+                self._parse_string_annotation(node.slice.elts[0])
+            else:
+                self._parse_string_annotation(node.slice)
+            self.generic_visit(node)
+            return
+
+        # For other type subscripts, parse all string elements as annotations
+        self._parse_string_annotation(node.slice)
         self.generic_visit(node)
 
 

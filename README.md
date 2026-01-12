@@ -24,7 +24,7 @@ A Python import analyzer with cross-file analysis, unused import detection, circ
 | Full scope analysis (LEGB)    |    ✅     |   ✅    |     ⚠️⁶     |    ⚠️⁶     |    ✅    |     ✅     |
 | String annotations            |    ✅     |   ✅    |     ✅      |     ✅     |    ✅    |     ✅     |
 | TYPE_CHECKING blocks          |    ✅     |   ✅    |     ✅      |    ⚠️⁷     |    ✅    |     ✅     |
-| Type comments (`# type:`)     |    ❌     |   ✅    |     ✅      |     ✅     |    ✅    |     ✅     |
+| Type comments (`# type:`)     |    ✅     |   ✅    |     ✅      |     ✅     |    ✅    |     ✅     |
 | Redundant alias (`x as x`)    |    ❌     |   ✅    |     ❌      |     ❌     |    ❌    |     ❌     |
 | Star import suggestions       |    ❌     |   ❌    |     ❌      |     ❌     |    ❌    |     ✅     |
 | Redefinition warnings         |    ❌     |   ✅    |     ❌      |     ✅     |    ✅    |     ❌     |
@@ -52,7 +52,6 @@ A Python import analyzer with cross-file analysis, unused import detection, circ
 
 Based on analysis of other tools' source code:
 
-- **Type comments**: `# type: int` style annotations (PEP 484) are not parsed
 - **Redundant alias detection**: `import X as X` as explicit re-export marker (Ruff feature)
 - **Star import suggestions**: Suggesting specific names to replace `from x import *` (Unimport feature)
 - **Redefinition warnings**: Warning when an import is reassigned before use (Pyflakes feature)
@@ -178,9 +177,16 @@ import-analyzer --single-file src/*.py
 - Recognizes usage in:
   - Function calls and attribute access
   - Type annotations (including forward references / string annotations)
+  - Type comments (`# type: List[int]`)
   - Decorators and base classes
   - Default argument values
   - `__all__` exports
+- **Type annotation handling** (matches pyflakes/ruff behavior):
+  - `typing.cast()`: First argument is annotation context
+  - `TypeVar()`: Constraints and `bound` keyword are annotation contexts
+  - `Literal[]`: Contents are NOT type annotations (literal values)
+  - `Annotated[]`: Only first argument is annotation, rest is metadata
+  - `TypeAlias`: RHS is annotation context
 - Skips `__future__` imports (they have side effects)
 - Respects `# noqa: F401` comments (matches flake8 behavior)
 - Full scope analysis with LEGB rule:
@@ -384,14 +390,15 @@ tox -e py
 │   ├── shadowed_imports_test.py
 │   ├── scope_analysis_test.py
 │   ├── special_imports_test.py
-│   ├── type_annotations_test.py
+│   ├── type_annotations_test.py  # String annotations & typing constructs
+│   ├── type_comments_test.py     # Type comments (# type:)
 │   ├── autofix_test.py
 │   ├── file_operations_test.py
 │   ├── cli_test.py
-│   ├── resolution_test.py   # Module resolution tests
-│   ├── graph_test.py        # Import graph tests
-│   ├── cross_file_test.py   # Cross-file analysis tests
-│   └── format_test.py       # Output formatting tests
+│   ├── resolution_test.py        # Module resolution tests
+│   ├── graph_test.py             # Import graph tests
+│   ├── cross_file_test.py        # Cross-file analysis tests
+│   └── format_test.py            # Output formatting tests
 ├── pyproject.toml
 ├── tox.ini
 └── .github/workflows/ci.yml
