@@ -8,6 +8,7 @@ from import_analyzer._ast_helpers import ImportExtractor
 from import_analyzer._ast_helpers import ScopeAwareNameCollector
 from import_analyzer._ast_helpers import collect_dunder_all_names
 from import_analyzer._ast_helpers import collect_string_annotation_names
+from import_analyzer._ast_helpers import collect_type_comment_names
 from import_analyzer._data import ImportInfo
 
 # Pattern to match noqa comments: # noqa or # noqa: F401 or # noqa: F401, E501
@@ -70,7 +71,7 @@ def find_unused_imports(source: str, ignore_all: bool = False) -> list[ImportInf
             analysis to identify imports that exist solely for re-export.
     """
     try:
-        tree = ast.parse(source)
+        tree = ast.parse(source, type_comments=True)
     except SyntaxError as e:
         print(f"Syntax error: {e}", file=sys.stderr)
         return []
@@ -86,6 +87,9 @@ def find_unused_imports(source: str, ignore_all: bool = False) -> list[ImportInf
     # Also check string annotations
     string_names = collect_string_annotation_names(tree)
 
+    # Also check type comments (PEP 484 style)
+    type_comment_names = collect_type_comment_names(tree)
+
     # Also check __all__ exports (names in __all__ are considered used)
     # Unless ignore_all is True (for cross-file analysis)
     if ignore_all:
@@ -94,7 +98,10 @@ def find_unused_imports(source: str, ignore_all: bool = False) -> list[ImportInf
         dunder_all_names = collect_dunder_all_names(tree)
 
     all_used_names = (
-        usage_collector.module_scope_usages | string_names | dunder_all_names
+        usage_collector.module_scope_usages
+        | string_names
+        | type_comment_names
+        | dunder_all_names
     )
 
     # Split source into lines for noqa checking

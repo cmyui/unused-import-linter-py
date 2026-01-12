@@ -779,6 +779,182 @@ def collect_string_annotation_names(tree: ast.AST) -> set[str]:
     return visitor.used_names
 
 
+class TypeCommentVisitor(ast.NodeVisitor):
+    """Extract names from type comments (PEP 484 style).
+
+    Parses type comments on:
+    - Function definitions (signature format: (int, str) -> bool)
+    - Function arguments (per-arg format)
+    - Assignments (variable type comments)
+    - For loops
+    - With statements
+
+    Type comments are only processed if no PEP 526 annotation exists
+    on the same construct (PEP 526 takes precedence).
+    """
+
+    def __init__(self) -> None:
+        self.used_names: set[str] = set()
+
+    def _parse_type_string(self, type_str: str) -> None:
+        """Parse a type expression string and extract names."""
+        try:
+            parsed = ast.parse(type_str, mode="eval")
+            collector = NameUsageCollector()
+            collector.visit(parsed)
+            self.used_names.update(collector.used_names)
+        except SyntaxError:
+            pass
+
+    def _split_type_args(self, args_str: str) -> list[str]:
+        """Split comma-separated type args, respecting brackets."""
+        result: list[str] = []
+        current: list[str] = []
+        depth = 0
+        for char in args_str:
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+            elif char == "," and depth == 0:
+                result.append("".join(current))
+                current = []
+                continue
+            current.append(char)
+        if current:
+            result.append("".join(current))
+        return result
+
+    def _parse_func_type_comment(self, type_comment: str) -> None:
+        """Parse function signature type comment: (int, str) -> bool"""
+        # Skip "type: ignore" directives (not a type annotation)
+        stripped = type_comment.strip()
+        if stripped.startswith("ignore"):
+            return
+
+        # Split on " -> " to separate args from return type
+        if " -> " in type_comment:
+            args_part, return_part = type_comment.rsplit(" -> ", 1)
+            self._parse_type_string(return_part.strip())
+
+            # Parse args: "(int, str)" or "(...)"
+            args_part = args_part.strip()
+            if args_part.startswith("(") and args_part.endswith(")"):
+                args_inner = args_part[1:-1].strip()
+                if args_inner != "...":
+                    for arg_type in self._split_type_args(args_inner):
+                        arg_type = arg_type.strip()
+                        # Handle *args and **kwargs: (*str, **int)
+                        if arg_type.startswith("**"):
+                            arg_type = arg_type[2:]
+                        elif arg_type.startswith("*"):
+                            arg_type = arg_type[1:]
+                        if arg_type:
+                            self._parse_type_string(arg_type)
+        else:
+            # No return type arrow, parse the whole thing as a type
+            self._parse_type_string(type_comment)
+
+    def _has_annotations(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool:
+        """Check if function has any PEP 526 style annotations."""
+        if node.returns:
+            return True
+        all_args = (
+            node.args.args
+            + node.args.posonlyargs
+            + node.args.kwonlyargs
+        )
+        for arg in all_args:
+            if arg.annotation:
+                return True
+        if node.args.vararg and node.args.vararg.annotation:
+            return True
+        if node.args.kwarg and node.args.kwarg.annotation:
+            return True
+        return False
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        # Only process function type_comment if no PEP 526 annotations exist
+        if node.type_comment and not self._has_annotations(node):
+            self._parse_func_type_comment(node.type_comment)
+
+        # Check per-argument type comments (only if arg has no annotation)
+        all_args = (
+            node.args.args
+            + node.args.posonlyargs
+            + node.args.kwonlyargs
+        )
+        for arg in all_args:
+            if arg.type_comment and not arg.annotation:
+                self._parse_type_string(arg.type_comment)
+        if node.args.vararg:
+            if node.args.vararg.type_comment and not node.args.vararg.annotation:
+                self._parse_type_string(node.args.vararg.type_comment)
+        if node.args.kwarg:
+            if node.args.kwarg.type_comment and not node.args.kwarg.annotation:
+                self._parse_type_string(node.args.kwarg.type_comment)
+
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        # Same logic as FunctionDef
+        if node.type_comment and not self._has_annotations(node):
+            self._parse_func_type_comment(node.type_comment)
+
+        all_args = (
+            node.args.args
+            + node.args.posonlyargs
+            + node.args.kwonlyargs
+        )
+        for arg in all_args:
+            if arg.type_comment and not arg.annotation:
+                self._parse_type_string(arg.type_comment)
+        if node.args.vararg:
+            if node.args.vararg.type_comment and not node.args.vararg.annotation:
+                self._parse_type_string(node.args.vararg.type_comment)
+        if node.args.kwarg:
+            if node.args.kwarg.type_comment and not node.args.kwarg.annotation:
+                self._parse_type_string(node.args.kwarg.type_comment)
+
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        # Assign nodes can have type_comment but never have annotations
+        # (AnnAssign is used for annotated assignments like x: int = 1)
+        if node.type_comment:
+            self._parse_type_string(node.type_comment)
+        self.generic_visit(node)
+
+    def visit_For(self, node: ast.For) -> None:
+        if node.type_comment:
+            self._parse_type_string(node.type_comment)
+        self.generic_visit(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        if node.type_comment:
+            self._parse_type_string(node.type_comment)
+        self.generic_visit(node)
+
+    def visit_With(self, node: ast.With) -> None:
+        if node.type_comment:
+            self._parse_type_string(node.type_comment)
+        self.generic_visit(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        if node.type_comment:
+            self._parse_type_string(node.type_comment)
+        self.generic_visit(node)
+
+
+def collect_type_comment_names(tree: ast.AST) -> set[str]:
+    """Collect names used in type comments (PEP 484 style)."""
+    visitor = TypeCommentVisitor()
+    visitor.visit(tree)
+    return visitor.used_names
+
+
 def collect_dunder_all_names(tree: ast.AST) -> set[str]:
     """Collect names exported via __all__.
 
